@@ -1,0 +1,65 @@
+"""
+应用入口文件。
+
+运行方式(本地不用 Docker 时):
+    uvicorn app.main:app --reload
+"app.main:app" 的意思是:去 app/main.py 里找名为 app 的对象来运行。
+
+启动后打开 http://localhost:8000/docs 就能看到自动生成的交互式 API 文档,
+可以直接在网页上测试接口——这是 FastAPI 最爽的地方之一。
+"""
+
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api import admin, careers, chat, industries, jobs, messages, user
+from app.config import settings
+from app.db import init_db
+
+# 打开 INFO 级别日志,方便看到"建表"、"存库失败"等运行状态
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# lifespan:FastAPI 推荐的"启动/关闭"钩子写法,替代旧的 on_event。
+# yield 前:启动时执行(建表);yield 后:关闭时执行(暂时没啥可做)。
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    logger.info("正在初始化数据库表 ...")
+    init_db()
+    logger.info("数据库初始化完成")
+    yield
+
+
+# 创建 FastAPI 应用实例。title 会显示在 /docs 文档页上。
+# 把 lifespan 传进去,启动时就会自动跑一次建表逻辑。
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
+
+# 注册 CORS 中间件,允许指定的前端地址跨域访问本后端。
+# 中间件的概念类比前端 Express 的 middleware:每个请求都会先经过它。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,  # 允许的前端来源
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许所有 HTTP 方法(GET/POST...)
+    allow_headers=["*"],  # 允许所有请求头
+)
+
+# 把各子模块的路由挂载到应用上
+app.include_router(careers.router)
+app.include_router(chat.router)
+app.include_router(industries.router)
+app.include_router(jobs.router)
+app.include_router(messages.router)
+app.include_router(user.router)
+app.include_router(admin.router)
+
+
+# 健康检查接口:部署后用来确认"服务还活着"。
+# 阿里云负载均衡、Docker 健康检查都会定期调用这类接口。
+@app.get("/api/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}

@@ -1,0 +1,13 @@
+# Python 运行时产生的缓存
+__pycache__/
+*.pyc
+
+# 虚拟环境目录(本地不用 Docker 直接跑时会用到)
+.venv/
+venv/
+
+# 真实的环境变量文件,绝对不能提交到 git(里面有密钥)
+.env
+
+# macOS 系统文件
+.DS_Store

@@ -1,0 +1,89 @@
+# docker-compose:用一个文件描述"怎么跑这些容器",之后一条 docker compose up 就能启动。
+# 相比每次敲一长串 docker run 参数,compose 更适合日常开发和部署。
+
+services:
+  # ============ 后端服务(FastAPI)============
+  backend:
+    # 用当前目录下的 Dockerfile 构建镜像
+    build: .
+    # 给容器起个名字,方便查看和管理
+    container_name: personal-ai-backend
+    # 端口映射:把宿主机(你的电脑/服务器)的 8000 映射到容器内的 8000
+    # 格式是 "宿主机端口:容器端口"
+    ports:
+      - "8000:8000"
+    # 把 .env 文件里的变量注入到容器里(大模型 Key、数据库密码等)
+    env_file:
+      - .env
+    # 让 backend 用 compose 内网访问 mysql,用服务名当主机名(不是 localhost!)。
+    # 这两个变量优先级高于 .env,写在这里能保证容器间连通。
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+    # 开发时把本地 app 目录挂载进容器,改代码后配合 --reload 可热更新,
+    # 不用每次重新 build。部署到服务器时可以去掉这两行。
+    volumes:
+      - ./app:/app/app
+    # 覆盖 Dockerfile 里的启动命令,加上 --reload 实现代码热重载(仅开发用)
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # 容器异常退出时自动重启(部署到服务器上很有用)
+    restart: unless-stopped
+    # depends_on 只是控制"启动顺序",默认不会等 MySQL 真正 ready。
+    # 加 condition: service_healthy 后,backend 会等 mysql healthcheck 通过再启动,
+    # 避免 backend 启动瞬间 MySQL 还没初始化完导致连接被拒。
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # ============ 数据库(MySQL 8.0)============
+  mysql:
+    # 官方镜像,arm64/amd64 都有,Mac 和阿里云都能跑
+    image: mysql:8.0
+    container_name: personal-ai-mysql
+    # 只暴露给宿主机 3306(方便本机 DBeaver 直连);
+    # 线上部署时可以去掉 ports,让 MySQL 只在 compose 内网可见,更安全。
+    ports:
+      - "3306:3306"
+    environment:
+      # 从 .env 读取密码;.env 里必须有 MYSQL_ROOT_PASSWORD 和 MYSQL_DATABASE
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      # 让 MySQL 默认用 utf8mb4(能存 emoji 和罕见汉字),避免以后踩编码坑
+      LANG: C.UTF-8
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      # 学习期/小内存服务器优化:默认 buffer pool 是 128M,这里显式声明,便于以后调整
+      - --innodb-buffer-pool-size=128M
+    # 用 named volume 持久化数据,docker compose down 不会丢数据。
+    # 需要清库重来时:docker compose down -v(带 -v 才会连数据卷一起删)
+    volumes:
+      - mysql_data:/var/lib/mysql
+    # 健康检查:每 5 秒执行一次 mysqladmin ping,连续成功才算 healthy。
+    # backend 就靠这个信号来判断"MySQL 已经可以接受连接了"。
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ============ 数据库可视化(Adminer)============
+  # 单文件 PHP 面板,浏览器访问 http://localhost:8080 即可看表、写 SQL。
+  # 只在开发环境跑,部署时可以在 compose 里注释掉这一段,或用 profiles 控制。
+  adminer:
+    image: adminer:4
+    container_name: personal-ai-adminer
+    ports:
+      - "8080:8080"
+    # 打开页面后默认服务器填 mysql(compose 服务名),用户名 root,密码就是 .env 里的那个
+    environment:
+      ADMINER_DEFAULT_SERVER: mysql
+    depends_on:
+      - mysql
+    restart: unless-stopped
+
+# ============ 数据卷声明 ============
+# named volume 由 docker 统一管理,位置不用关心,跨平台可移植。
+volumes:
+  mysql_data:

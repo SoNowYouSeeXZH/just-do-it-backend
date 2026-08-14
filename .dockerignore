@@ -1,0 +1,12 @@
+# .dockerignore:构建镜像时,这里列出的文件/目录不会被拷进镜像。
+# 作用类似前端的 .gitignore,能让镜像更小、构建更快,也避免把密钥打进镜像。
+
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+.git/
+.gitignore
+*.md
+.DS_Store

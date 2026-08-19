@@ -38,12 +38,14 @@ services:
     environment:
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
-    # 开发时把本地 app 目录挂载进容器,改代码后配合 --reload 可热更新,
-    # 不用每次重新 build。部署到服务器时可以去掉这两行。
-    volumes:
-      - ./app:/app/app
-    # 覆盖 Dockerfile 里的启动命令,加上 --reload 实现代码热重载(仅开发用)
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # 启动命令沿用 Dockerfile 里的 CMD(不带 --reload),代码固化在镜像里。
+    # 本地开发想要"改代码即生效"的热重载,见 docker-compose.override.yml——
+    # 那个文件在本机 docker compose up 时会自动叠加,部署时不上传服务器。
+    #
+    # 为什么生产不能用 --reload + 目录挂载:
+    # 1. rsync 推代码时文件是逐个到达的,reloader 可能在只传了一半时就重启,
+    #    此时 import 失败,服务会有一段时间 500;
+    # 2. 直接在服务器上编辑文件会静默重启生产服务,不留任何痕迹,难排查。
     # 容器异常退出时自动重启(部署到服务器上很有用)
     restart: unless-stopped
     # depends_on 只是控制"启动顺序",默认不会等 MySQL 真正 ready。

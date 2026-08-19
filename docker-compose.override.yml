@@ -1,0 +1,17 @@
+# docker-compose.override.yml —— 仅本地开发用的叠加配置
+#
+# docker compose 会在 `docker compose up` 时自动加载同目录下的 override 文件,
+# 把这里的字段合并进 docker-compose.yml。所以:
+# - 本地开发:直接 docker compose up,自动获得目录挂载 + 热重载,改代码即生效;
+# - 线上部署:rsync 时排除这个文件(见部署命令的 --exclude),
+#   服务器上只有 docker-compose.yml,跑的就是固化在镜像里的生产配置。
+#
+# 一句话:开发的便利留在本机,生产的稳定不受它影响。
+
+services:
+  backend:
+    # 把本地 app 目录挂载进容器,配合下面的 --reload 实现"改代码即生效"。
+    volumes:
+      - ./app:/app/app
+    # 覆盖镜像 CMD,加 --reload 开启热重载(只适合本地单人开发)。
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

@@ -34,3 +34,12 @@ passlib==1.7.4
 # bcrypt 4.1.0+ 删除了 __about__ 模块,passlib 1.7.4 读取它会报
 # AttributeError: module 'bcrypt' has no attribute '__about__',故锁到 4.0.x
 bcrypt==4.0.1
+
+# ===== 登录鉴权 =====
+# PyJWT:签发/校验 JWT token。登录成功后发一个 token 给前端,
+# 之后每个请求带 Authorization: Bearer <token>,服务端验签就知道是谁,
+# 不用维护 session 状态。
+PyJWT==2.10.1
+# python-multipart:FastAPI 的 OAuth2PasswordBearer 依赖它解析表单,
+# 装上避免运行时报 "Form data requires python-multipart"。
+python-multipart==0.0.20

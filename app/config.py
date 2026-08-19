@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     # 应用名称,会显示在自动生成的 API 文档标题上
     app_name: str = "Personal AI Backend"
 
+    # 运行环境:development / production。
+    # 生产环境会关掉 /docs 和 /openapi.json,避免接口结构对外暴露。
+    environment: str = "development"
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.lower() == "production"
+
     # 允许访问本后端的前端地址(CORS 跨域白名单)。
     # 前端和后端端口不同就属于"跨域",浏览器默认会拦截,必须在这里放行。
     # 这里默认放行本地常见的前端开发端口(Vite 5173 / CRA 3000)。
@@ -37,12 +45,22 @@ class Settings(BaseSettings):
     # 题库批量写入接口的入站鉴权 Key,与大模型出站 Key 分开管理
     admin_api_key: str = ""
 
+    # ===== 登录鉴权(JWT)相关配置 =====
+    # 签发/校验 token 用的密钥,务必通过环境变量传入随机高强度字符串,不要写死。
+    jwt_secret_key: str = ""
+    # 签名算法,HS256 是最常见的选择,和密钥配套使用即可,不需要额外配置。
+    jwt_algorithm: str = "HS256"
+    # token 有效期(分钟),过期后前端需要重新登录。
+    access_token_expire_minutes: int = 60 * 24 * 7  # 7 天
+
     # ===== MySQL 数据库配置 =====
     # 用 Docker 时 host 是 compose 里的服务名 "mysql";
     # 本地不走容器直接跑 uvicorn 时,改成 "127.0.0.1" 即可。
     mysql_host: str = "mysql"
     mysql_port: int = 3306
-    mysql_user: str = "root"
+    # 应用连库账号:权限限定在 mysql_database 这一个库(见 docker-compose.yml
+    # 里 mysql 服务的 MYSQL_USER/MYSQL_PASSWORD),不要再用 root 连库。
+    mysql_user: str = ""
     mysql_password: str = ""  # 必须由 .env 提供,别写死
     mysql_database: str = "personal_ai"
 

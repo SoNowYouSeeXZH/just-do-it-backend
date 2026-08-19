@@ -36,7 +36,18 @@ async def lifespan(_app: FastAPI):
 
 # 创建 FastAPI 应用实例。title 会显示在 /docs 文档页上。
 # 把 lifespan 传进去,启动时就会自动跑一次建表逻辑。
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
+#
+# 生产环境(ENVIRONMENT=production)把 docs_url / redoc_url / openapi_url 设为 None,
+# 关掉 /docs、/redoc、/openapi.json。这三个地址会把全部接口结构、参数、模型
+# 明细公开,等于给攻击者一份地图,线上没必要开着。开发环境保持开启方便调试。
+_docs_enabled = not settings.is_production
+app = FastAPI(
+    title=settings.app_name,
+    lifespan=lifespan,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
+)
 
 # 注册 CORS 中间件,允许指定的前端地址跨域访问本后端。
 # 中间件的概念类比前端 Express 的 middleware:每个请求都会先经过它。

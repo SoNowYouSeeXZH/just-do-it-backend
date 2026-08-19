@@ -1,5 +1,23 @@
 # docker-compose:用一个文件描述"怎么跑这些容器",之后一条 docker compose up 就能启动。
 # 相比每次敲一长串 docker run 参数,compose 更适合日常开发和部署。
+#
+# ⚠️ 已有数据库的迁移提醒(切换到非 root 应用账号)
+# 下面 mysql 服务的 MYSQL_USER/MYSQL_PASSWORD 只在"数据目录为空的首次初始化"时生效。
+# 如果数据卷里已经有数据(线上环境就是这种情况),这两个变量不会补建账号,
+# 需要手动执行一次下面的 SQL(把 <APP_PASSWORD> 换成 .env 里 MYSQL_PASSWORD 的值):
+#
+#   docker compose exec mysql mysql -uroot -p
+#   CREATE USER IF NOT EXISTS 'justdoit_app'@'%' IDENTIFIED BY '<APP_PASSWORD>';
+#   GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, INDEX, ALTER, REFERENCES
+#     ON personal_ai.* TO 'justdoit_app'@'%';
+#   FLUSH PRIVILEGES;
+#
+# 注意只授到 personal_ai.* 这一个库,且不给 DROP / GRANT OPTION / SUPER。
+# 保留 CREATE/INDEX/ALTER 是因为应用启动时会跑 SQLModel.metadata.create_all 建表。
+# 账号建好后再把 .env 的 MYSQL_USER 从 root 改成 justdoit_app 并重启 backend。
+#
+# ⚠️ 另外:MySQL 官方镜像不接受 MYSQL_USER=root(首次初始化时会直接报错退出)。
+# 所以在删除数据卷重新初始化之前,务必先把 .env 的 MYSQL_USER 改成非 root 值。
 
 services:
   # ============ 后端服务(FastAPI)============
@@ -40,14 +58,20 @@ services:
     # 官方镜像,arm64/amd64 都有,Mac 和阿里云都能跑
     image: mysql:8.0
     container_name: personal-ai-mysql
-    # 只暴露给宿主机 3306(方便本机 DBeaver 直连);
-    # 线上部署时可以去掉 ports,让 MySQL 只在 compose 内网可见,更安全。
-    ports:
-      - "3306:3306"
+    # 不再向宿主机映射 3306。
+    # 数据库只在 compose 内网可见(backend/adminer 用服务名 "mysql" 访问),
+    # 公网扫描器就打不到它了。本机要用 DBeaver 之类的客户端连库时,
+    # 走 adminer 面板,或临时 docker compose exec mysql mysql -uroot -p。
     environment:
       # 从 .env 读取密码;.env 里必须有 MYSQL_ROOT_PASSWORD 和 MYSQL_DATABASE
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
+      # 官方镜像首次初始化时会自动创建这个账号,
+      # 并只授予它 MYSQL_DATABASE 这一个库的权限(不含其他库、不含 GRANT 权限)。
+      # backend 用它连库,避免应用层拿着 root 跑——一旦应用被攻破,
+      # 影响范围也只限于这个业务库。
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       # 让 MySQL 默认用 utf8mb4(能存 emoji 和罕见汉字),避免以后踩编码坑
       LANG: C.UTF-8
     command:

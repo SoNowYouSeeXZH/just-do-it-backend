@@ -1,4 +1,14 @@
-"""题库批量写入服务：校验、规范化、去重和事务处理。"""
+"""题库批量写入服务:校验、规范化、去重和事务处理。
+
+本模块保留的是纯业务规则:
+- 什么样的题目算合法(validate_question)
+- 怎么算「同一道题」(question_hash)
+- 冲突时是跳过还是失败
+
+DTO 已移到 schemas/question_bank.py,数据查询已移到 repositories/question_bank.py。
+异常改用 core.exceptions.ResourceNotFoundError,不再自定义 JobNotFoundError——
+「资源不存在」是通用概念,没必要每个模块造一个。
+"""
 
 from __future__ import annotations
 
@@ -6,68 +16,47 @@ import hashlib
 import json
 import re
 import unicodedata
-from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, select
+from sqlmodel import Session
 
-from app.models.job import Job, Question
+from app.core.exceptions import ResourceNotFoundError
+from app.models.job import Question
+from app.repositories import job as job_repo
+from app.repositories import question_bank as bank_repo
+from app.schemas.question_bank import (
+    BatchQuestionsRequest,
+    BatchQuestionsResponse,
+    QuestionInput,
+    QuestionResult,
+)
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
-class JobNotFoundError(Exception):
-    """批量导入目标职业不存在。"""
-
-
-class QuestionInput(BaseModel):
-    """AI 提交的单道题目，不暴露数据库自增 id 和 content_hash。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    qtype: Literal["single", "multi"]
-    prompt: str
-    options: list[str]
-    answer_indices: list[int]
-    explanation: str
-    source_url: str | None = None
-
-
-class BatchQuestionsRequest(BaseModel):
-    """批量接口请求体。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    job_id: str = Field(min_length=1, max_length=32)
-    questions: list[QuestionInput] = Field(min_length=1, max_length=100)
-
-
-class QuestionResult(BaseModel):
-    index: int
-    status: Literal["created", "skipped", "failed"]
-    question_id: int | None = None
-    reason: str | None = None
-
-
-class BatchQuestionsResponse(BaseModel):
-    total: int
-    created: int
-    skipped: int
-    failed: int
-    results: list[QuestionResult]
-
-
 def normalize_text(value: str) -> str:
-    """生成用于展示和去重的稳定文本。"""
+    """生成用于展示和去重的稳定文本。
 
+    两步归一化:
+    1. NFC —— 把 Unicode 组合字符统一成合成形式,否则视觉相同的字
+       可能有不同字节表示,算出的 hash 就不同
+    2. 空白折叠 —— 连续空格/换行压成一个空格
+
+    做这些的目的是让「肉眼看着一样的题」算出同一个指纹。
+    """
     normalized = unicodedata.normalize("NFC", value).strip()
     return _WHITESPACE_RE.sub(" ", normalized)
 
 
 def question_hash(job_id: str, question: QuestionInput) -> str:
-    """按固定 JSON 规则生成题目内容指纹。"""
+    """按固定 JSON 规则生成题目内容指纹。
 
+    只用 job_id + qtype + prompt + options 参与计算,不含 explanation——
+    因为「同一道题配了不同解析」应该算重复题,而不是两道题。
+
+    sort_keys=True 和固定 separators 是为了保证同样的内容永远
+    序列化成同样的字节串,否则 dict 顺序变化会导致 hash 不稳定。
+    """
     canonical = {
         "job_id": normalize_text(job_id),
         "qtype": normalize_text(question.qtype),
@@ -84,8 +73,12 @@ def question_hash(job_id: str, question: QuestionInput) -> str:
 
 
 def validate_question(question: QuestionInput) -> str | None:
-    """执行无法仅靠 Pydantic 表达的单题业务校验。"""
+    """执行无法仅靠 Pydantic 表达的单题业务校验。
 
+    返回 None 表示通过,否则返回失败原因。
+    为什么不抛异常?因为批量导入时要逐题报告结果,
+    一道题不合格不该中断其余 99 道。
+    """
     if not (2 <= len(question.options) <= 6):
         return "options 数量必须在 2 到 6 个之间"
     if any(not normalize_text(option) for option in question.options):
@@ -106,35 +99,18 @@ def validate_question(question: QuestionInput) -> str | None:
         return "single 题必须且只能有一个正确答案"
     if question.qtype == "multi" and len(question.answer_indices) < 1:
         return "multi 题至少需要一个正确答案"
-    if any(index < 0 or index >= len(question.options) for index in question.answer_indices):
+    if any(
+        index < 0 or index >= len(question.options)
+        for index in question.answer_indices
+    ):
         return "answer_indices 包含越界下标"
     return None
 
 
-def _existing_hashes(session: Session, job_id: str) -> set[str]:
-    return {
-        question.content_hash
-        for question in session.exec(
-            select(Question).where(
-                Question.job_id == job_id,
-                Question.content_hash.is_not(None),
-            )
-        ).all()
-        if question.content_hash
-    }
-
-
-def _legacy_question_hashes(session: Session, job_id: str) -> set[str]:
-    """兼容历史 seed 数据的 NULL hash，迁移完成后通常为空。"""
-
+def _legacy_hashes(session: Session, job_id: str) -> set[str]:
+    """给历史 NULL hash 数据现场补算指纹,纳入去重集合。"""
     hashes: set[str] = set()
-    legacy_questions = session.exec(
-        select(Question).where(
-            Question.job_id == job_id,
-            Question.content_hash.is_(None),
-        )
-    ).all()
-    for question in legacy_questions:
+    for question in bank_repo.legacy_questions(session, job_id):
         canonical = QuestionInput(
             qtype=question.qtype,
             prompt=question.prompt,
@@ -148,8 +124,11 @@ def _legacy_question_hashes(session: Session, job_id: str) -> set[str]:
 
 
 def _is_content_hash_conflict(exc: IntegrityError) -> bool:
-    """只把 content_hash 唯一键冲突识别为重复题。"""
+    """只把 content_hash 唯一键冲突识别为重复题。
 
+    为什么要这么仔细地判断?因为 IntegrityError 也可能是外键失败、
+    字段超长等真正的错误。一律当成「重复题跳过」会掩盖 bug。
+    """
     message = str(exc.orig).lower()
     return (
         "content_hash" in message
@@ -162,21 +141,22 @@ def batch_create_questions(
     session: Session,
     request: BatchQuestionsRequest,
 ) -> BatchQuestionsResponse:
-    """批量写入题目：业务错误逐题返回，数据库异常整批回滚。"""
-
-    if session.get(Job, request.job_id) is None:
-        raise JobNotFoundError("职业不存在")
+    """批量写入题目:业务错误逐题返回,数据库异常整批回滚。"""
+    if job_repo.get_job(session, request.job_id) is None:
+        raise ResourceNotFoundError("职业不存在")
 
     results: list[QuestionResult] = []
-    known_hashes = _existing_hashes(session, request.job_id)
-    known_hashes.update(_legacy_question_hashes(session, request.job_id))
+    known_hashes = bank_repo.existing_hashes(session, request.job_id)
+    known_hashes.update(_legacy_hashes(session, request.job_id))
     created = skipped = failed = 0
 
     try:
         for index, item in enumerate(request.questions):
             reason = validate_question(item)
             if reason:
-                results.append(QuestionResult(index=index, status="failed", reason=reason))
+                results.append(
+                    QuestionResult(index=index, status="failed", reason=reason)
+                )
                 failed += 1
                 continue
 
@@ -208,14 +188,20 @@ def batch_create_questions(
             )
 
             try:
+                # begin_nested 开一个 SAVEPOINT:单题冲突只回滚这一题,
+                # 不影响已经成功的其他题。这是「部分成功」语义的实现关键。
                 with session.begin_nested():
                     session.add(question)
                     session.flush()
             except IntegrityError as exc:
                 if not _is_content_hash_conflict(exc):
                     raise
+                # 内存里的 known_hashes 没拦住,说明是并发写入——
+                # 数据库唯一索引兜住了,这正是「约束该由数据库保证」的例证
                 results.append(
-                    QuestionResult(index=index, status="skipped", reason="并发下题目已存在")
+                    QuestionResult(
+                        index=index, status="skipped", reason="并发下题目已存在"
+                    )
                 )
                 skipped += 1
                 continue

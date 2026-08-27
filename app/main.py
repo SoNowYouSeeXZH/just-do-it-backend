@@ -15,22 +15,28 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, careers, chat, industries, jobs, messages, user
+from app.api import admin, careers, chat, industries, jobs, messages, tasks, user
 from app.config import settings
-from app.db import init_db
+from app.core.handlers import register_exception_handlers
+from app.core.middleware import RequestLoggingMiddleware
+from app.db import SessionDep, init_db
+from app.services import health as health_service
 
 # 打开 INFO 级别日志,方便看到"建表"、"存库失败"等运行状态
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
 
 
 # lifespan:FastAPI 推荐的"启动/关闭"钩子写法,替代旧的 on_event。
-# yield 前:启动时执行(建表);yield 后:关闭时执行(暂时没啥可做)。
+# 开发环境可自动建表;生产环境必须先执行 alembic upgrade head。
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    logger.info("正在初始化数据库表 ...")
-    init_db()
-    logger.info("数据库初始化完成")
+    if settings.auto_create_tables and not settings.is_production:
+        logger.info("正在初始化数据库表 ...")
+        init_db()
+        logger.info("数据库初始化完成")
+    else:
+        logger.info("生产模式不自动建表，请在启动前执行 alembic upgrade head")
     yield
 
 
@@ -59,12 +65,23 @@ app.add_middleware(
     allow_headers=["*"],  # 允许所有请求头
 )
 
+# 请求级可观测性:统一生成 request_id、记录状态码与耗时。
+app.add_middleware(
+    RequestLoggingMiddleware,
+    slow_request_ms=settings.slow_request_ms,
+)
+
+# 注册全局异常处理器:业务异常 -> 对应状态码,未知异常 -> 500 + 日志堆栈。
+# 挂在这里之后,各路由函数就不需要自己写 try/except 兜底了。
+register_exception_handlers(app)
+
 # 把各子模块的路由挂载到应用上
 app.include_router(careers.router)
 app.include_router(chat.router)
 app.include_router(industries.router)
 app.include_router(jobs.router)
 app.include_router(messages.router)
+app.include_router(tasks.router)
 app.include_router(user.router)
 app.include_router(admin.router)
 
@@ -72,5 +89,6 @@ app.include_router(admin.router)
 # 健康检查接口:部署后用来确认"服务还活着"。
 # 阿里云负载均衡、Docker 健康检查都会定期调用这类接口。
 @app.get("/api/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health(session: SessionDep) -> dict[str, str]:
+    """健康检查同时探测数据库,用于容器/负载均衡判断依赖是否就绪。"""
+    return health_service.check(session)

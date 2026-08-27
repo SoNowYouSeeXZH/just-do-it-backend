@@ -1,41 +1,34 @@
-"""
-消息历史查询接口。
+"""消息历史查询接口。
 
-只提供一个 GET /api/messages?limit=20,按时间倒序拉最近 N 条。
-用来给前端展示对话历史,或者供你自己在浏览器里 debug 数据是否落库成功。
+GET /api/messages?limit=20 —— 只按当前用户取最近 N 条。
 
-这个接口能看到全部用户的聊天记录,所以必须登录才能访问——
-挂上 get_current_user_id 依赖,没带有效 token 直接 401。
+认证(Authentication)只回答「你是谁」；授权(Authorization)还要回答
+「你能看哪些数据」。这里通过 user_id 所有权过滤完成资源授权。
 """
 
-from typing import Annotated, Sequence
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
-from sqlmodel import desc, select
 
+from app.api.deps import get_current_user_id
 from app.db import SessionDep
-from app.models.message import ChatMessage
-from app.services.auth import get_current_user_id
+from app.schemas.chat import ChatMessagePublic
+from app.services import chat as chat_service
 
 router = APIRouter(prefix="/api", tags=["messages"])
 
 
-@router.get("/messages", response_model=list[ChatMessage])
+@router.get("/messages", response_model=list[ChatMessagePublic])
 def list_messages(
     session: SessionDep,
     _user_id: Annotated[int, Depends(get_current_user_id)],
-    # Query(...) 用来给查询参数加上校验和文档说明:
-    # - ge=1, le=200:范围限制,超出直接 422,不用自己写 if
-    # - 默认值写在等号右边(= 20),不再塞进 Query 里
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
-) -> list[ChatMessage]:
-    # SQLModel 的 select 语法:等价于 SELECT * FROM chat_messages ORDER BY created_at DESC LIMIT :limit
-    # desc(ChatMessage.created_at) 表示按创建时间倒序排,最新的在前
-    statement = (
-        select(ChatMessage)
-        .order_by(desc(ChatMessage.created_at))
-        .limit(limit)
+) -> list[ChatMessagePublic]:
+    """取最近 limit 条聊天记录,需要登录。"""
+    messages = chat_service.list_recent_messages(
+        session, user_id=_user_id, limit=limit
     )
-    # session.exec 执行 SQL,.all() 把结果全部取出为 list
-    results = session.exec(statement).all()
-    return list[ChatMessage](results)
+    return [
+        ChatMessagePublic.model_validate(message, from_attributes=True)
+        for message in messages
+    ]

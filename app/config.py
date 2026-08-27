@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     # 生产环境会关掉 /docs 和 /openapi.json,避免接口结构对外暴露。
     environment: str = "development"
 
+    # 可观测性配置。慢请求阈值用环境变量控制,不同环境不改代码。
+    log_level: str = "INFO"
+    slow_request_ms: int = 500
+
+    # 开发环境可自动建表；生产环境必须使用 Alembic，避免应用启动时偷偷改表。
+    auto_create_tables: bool = True
+
     @property
     def is_production(self) -> bool:
         return self.environment.lower() == "production"

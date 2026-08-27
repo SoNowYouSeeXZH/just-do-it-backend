@@ -1,33 +1,34 @@
-"""
-行业知识库接口。
+"""行业知识库接口。
 
 两个接口:
-- GET /api/industries              列出所有行业(知识库列表页用)
-- GET /api/industries/{industry_id} 取单个行业详情(overview/keyPoints/links)
+- GET /api/industries               列出所有行业(知识库列表页用)
+- GET /api/industries/{industry_id} 取单个行业详情
 
-内容纯只读、数据量小(个位数条目),不需要像 jobs 那样做题目数聚合或随机抽样,
-直接整表/按主键查询即可。
+重构后这一层只剩「声明契约 + 转交」。404 不再由路由抛出——
+业务层抛 ResourceNotFoundError,全局处理器统一翻译。
 """
 
-from fastapi import APIRouter, HTTPException
-from sqlmodel import select
+from fastapi import APIRouter
 
 from app.db import SessionDep
-from app.models.industry import Industry
+from app.schemas.industry import IndustryPublic
+from app.services import industry as industry_service
 
 router = APIRouter(prefix="/api", tags=["industries"])
 
 
-@router.get("/industries", response_model=list[Industry])
-def list_industries(session: SessionDep) -> list[Industry]:
-    """列出全部行业。按 id 排序,保证前端展示顺序稳定。"""
-    return list(session.exec(select(Industry).order_by(Industry.id)).all())
+@router.get("/industries", response_model=list[IndustryPublic])
+def list_industries(session: SessionDep) -> list[IndustryPublic]:
+    """列出全部行业。"""
+    industries = industry_service.list_industries(session)
+    return [
+        IndustryPublic.model_validate(item, from_attributes=True)
+        for item in industries
+    ]
 
 
-@router.get("/industries/{industry_id}", response_model=Industry)
-def get_industry(industry_id: str, session: SessionDep) -> Industry:
-    """取单个行业详情。业务 id 是字符串主键,直接按主键取,查不到返回 404。"""
-    industry = session.get(Industry, industry_id)
-    if industry is None:
-        raise HTTPException(status_code=404, detail="行业不存在")
-    return industry
+@router.get("/industries/{industry_id}", response_model=IndustryPublic)
+def get_industry(industry_id: str, session: SessionDep) -> IndustryPublic:
+    """取单个行业详情,不存在返回 404。"""
+    industry = industry_service.get_industry(session, industry_id)
+    return IndustryPublic.model_validate(industry, from_attributes=True)

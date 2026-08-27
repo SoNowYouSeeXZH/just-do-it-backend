@@ -11,3 +11,8 @@ venv/
 
 # macOS 系统文件
 .DS_Store
+
+# pytest 缓存
+.pytest_cache/
+.coverage
+htmlcov/

@@ -1,0 +1,11 @@
+[run]
+source = app
+omit =
+    app/backfill_question_hashes.py
+    app/seed.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    raise NotImplementedError

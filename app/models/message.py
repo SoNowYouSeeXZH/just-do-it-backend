@@ -21,9 +21,13 @@ class ChatMessage(SQLModel, table=True):
     # 新建对象时 id 还没有,存进去后由数据库赋值。
     id: int | None = Field(default=None, primary_key=True)
 
+    # 所有者:必须关联真实用户,否则只能认证「有人登录了」,无法授权
+    # 「这个用户能不能读这条消息」。外键让数据库拒绝不存在的 user_id。
+    # index=True 是因为历史查询永远会按 user_id 过滤。
+    user_id: int = Field(foreign_key="users.id", index=True)
+
     # 角色:'user' 或 'assistant'。
     # 用 VARCHAR(16) 而不是 ENUM,是因为 ENUM 加字段要改表结构,VARCHAR 灵活。
-    # index=True 会为它建索引,方便"只查 user 说过的话"这类过滤。
     role: str = Field(max_length=16, index=True)
 
     # 内容:用 TEXT(SQLModel 里通过不给 max_length 默认为 TEXT/较长)。

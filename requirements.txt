@@ -24,6 +24,8 @@ sqlmodel==0.0.22
 # PyMySQL:纯 Python 写的 MySQL 驱动,免编译、跨平台。
 # 我们先用同步驱动,代码好读;将来要吞吐再换 asyncmy(异步驱动)。
 PyMySQL==1.1.1
+# Alembic:版本化管理数据库结构,生产环境不依赖 create_all() 自动建表
+alembic==1.14.1
 # cryptography:MySQL 8 默认用 caching_sha2_password 认证,
 # PyMySQL 必须借助 cryptography 才能算出加密握手,否则报
 # "'cryptography' package is required for ... auth methods"。

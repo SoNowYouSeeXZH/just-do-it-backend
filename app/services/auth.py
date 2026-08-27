@@ -1,9 +1,12 @@
-"""
-JWT 鉴权工具。
+"""JWT token 的签发与校验(纯逻辑,不依赖 HTTP)。
 
-作用:登录成功后签发一个 token,前端把它放进请求头
-Authorization: Bearer <token>,后端用它确认"这是谁在请求",
-不用每次请求都重新验证用户名密码。
+重构要点:这个文件原来 import 了 fastapi,并且直接抛 HTTPException。
+问题在于 create_access_token 是被业务层(services/user.py)调用的,
+于是"HTTP 状态码"这个概念就顺着调用链渗进了业务层。
+
+现在它只做两件事:把用户身份编码进 token、把 token 解码回用户 id。
+配置缺失时抛 ConfigurationError(业务异常),token 无效时抛 InvalidTokenError,
+由 API 层的依赖(app/api/deps.py)和全局异常处理器决定怎么变成 HTTP 响应。
 
 概念对照(前端类比):有点像浏览器的登录态 cookie,只不过
 token 是无状态的——服务端不用存 session,校验签名就知道真伪。
@@ -12,13 +15,9 @@ token 是无状态的——服务端不用存 session,校验签名就知道真�
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
 
 from app.config import settings
-
-# tokenUrl 只是给 /docs 里的"Authorize"按钮用,指向登录接口,不影响实际校验逻辑。
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login", auto_error=False)
+from app.core.exceptions import ConfigurationError, InvalidTokenError
 
 
 def _require_secret() -> str:
@@ -28,10 +27,7 @@ def _require_secret() -> str:
     任何人都能伪造 token。宁可服务报 503 让人立刻发现配置缺失。
     """
     if not settings.jwt_secret_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="服务端未配置 JWT_SECRET_KEY,鉴权功能不可用",
-        )
+        raise ConfigurationError("服务端未配置 JWT_SECRET_KEY,鉴权功能不可用")
     return settings.jwt_secret_key
 
 
@@ -41,29 +37,21 @@ def create_access_token(*, user_id: int, username: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(
         minutes=settings.access_token_expire_minutes
     )
+    # sub(subject)是 JWT 标准字段,存"这个 token 代表谁";
+    # exp 是标准过期时间字段,解码时 PyJWT 会自动校验,过期直接抛异常。
     payload = {"sub": str(user_id), "username": username, "exp": expire}
     return jwt.encode(payload, secret, algorithm=settings.jwt_algorithm)
 
 
-def get_current_user_id(token: str | None = Depends(oauth2_scheme)) -> int:
-    """受保护路由的依赖:校验 token 并返回其中的用户 id。
+def decode_access_token(token: str) -> int:
+    """校验 token 并取出用户 id。
 
-    token 缺失、签名不对、或者已过期,统一返回 401——
-    前端看到 401 就知道该跳回登录页重新拿 token。
+    签名不对、已过期、payload 结构异常,统一抛 InvalidTokenError——
+    对外不区分具体原因,避免给伪造 token 的人提供调试反馈。
     """
     secret = _require_secret()
-    if token is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="未登录或登录已过期",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
     try:
         payload = jwt.decode(token, secret, algorithms=[settings.jwt_algorithm])
         return int(payload["sub"])
     except (jwt.PyJWTError, KeyError, ValueError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="未登录或登录已过期",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
+        raise InvalidTokenError("未登录或登录已过期") from exc

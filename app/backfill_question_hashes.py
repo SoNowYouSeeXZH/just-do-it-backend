@@ -12,7 +12,8 @@ from sqlmodel import Session, select
 
 from app.db import engine
 from app.models.job import Question
-from app.services.question_bank import QuestionInput, question_hash
+from app.schemas.question_bank import QuestionInput
+from app.services.question_bank import question_hash
 
 
 def main() -> None:

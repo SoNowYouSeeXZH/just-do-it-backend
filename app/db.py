@@ -37,8 +37,11 @@ engine = create_engine(
 def init_db() -> None:
     """启动时建表。
 
-    SQLModel.metadata.create_all 会扫描所有已导入的 SQLModel 子类,
-    对不存在的表执行 CREATE TABLE。已存在的表不会被改动(所以改字段要走迁移工具)。
+    重要:生产环境不应在启动时执行 DDL。当前通过 settings.auto_create_tables
+    仅允许开发环境调用它；生产结构变更走 Alembic 版本迁移。
+
+    SQLModel.metadata.create_all 只会创建不存在的表，不会安全地修改已有表，
+    因此不能替代迁移工具。
 
     重要:表定义必须先被 import 过,SQLModel 才知道有哪些表要建。
     这里只 import 一次 app.models 包,包的 __init__ 会自动把包内所有模型

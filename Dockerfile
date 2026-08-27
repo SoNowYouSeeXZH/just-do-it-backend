@@ -23,6 +23,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # 再把应用代码拷进来
 COPY ./app ./app
+# Alembic 迁移配置也进入镜像，部署时可执行 alembic current/upgrade/stamp
+COPY alembic.ini .
+COPY alembic ./alembic
 
 # 声明容器对外暴露 8000 端口(仅作文档说明,真正映射在 compose 里配)
 EXPOSE 8000

@@ -31,6 +31,25 @@ class Settings(BaseSettings):
     # 开发环境可自动建表；生产环境必须使用 Alembic，避免应用启动时偷偷改表。
     auto_create_tables: bool = True
 
+    # ===== 缓存(Redis)配置 =====
+    # cache_enabled=False 时所有缓存调用直接落库,方便本地排查"是不是缓存的问题"。
+    # 测试环境默认关闭(见 tests/conftest.py),让断言反映真实的数据库行为。
+    cache_enabled: bool = True
+    redis_host: str = "redis"
+    redis_port: int = 6379
+    redis_db: int = 0
+    # Redis 没配密码时留空。生产环境即使只在内网,也建议配上——
+    # 内网不等于可信,一旦有别的容器被攻破,无密码的 Redis 就是敞开的。
+    redis_password: str = ""
+    # 缓存基础存活时间(秒)。内容类数据(职业/行业/题库)变更极少,
+    # 5 分钟足够挡住绝大部分重复查询,同时保证运营改了内容不会长时间看不到。
+    cache_ttl_seconds: int = 300
+    # 空结果的 TTL 要短得多:它只是用来挡穿透攻击的,不是真正的数据。
+    cache_null_ttl_seconds: int = 30
+    # 连接/读写超时(秒)。必须设小值:缓存是为了让请求更快,
+    # 如果 Redis 卡住而这里无限等待,加缓存反而让接口比不加更慢。
+    redis_timeout_seconds: float = 0.5
+
     @property
     def is_production(self) -> bool:
         return self.environment.lower() == "production"

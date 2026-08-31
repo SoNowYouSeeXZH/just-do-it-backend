@@ -16,3 +16,7 @@ venv/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# TLS 私钥和证书,只在服务器上生成,绝不进版本库
+nginx/certs/*
+!nginx/certs/.gitkeep

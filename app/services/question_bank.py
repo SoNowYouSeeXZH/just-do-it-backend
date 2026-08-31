@@ -8,6 +8,9 @@
 DTO 已移到 schemas/question_bank.py,数据查询已移到 repositories/question_bank.py。
 异常改用 core.exceptions.ResourceNotFoundError,不再自定义 JobNotFoundError——
 「资源不存在」是通用概念,没必要每个模块造一个。
+
+写入成功后会主动失效职业相关缓存(见 batch_create_questions 末尾),
+否则新增的题目要等缓存 TTL 过期才会体现在 /api/jobs 的题目数里。
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ import unicodedata
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
+from app.core import cache, cache_keys
 from app.core.exceptions import ResourceNotFoundError
 from app.models.job import Question
 from app.repositories import job as job_repo
@@ -216,6 +220,24 @@ def batch_create_questions(
     except Exception:
         session.rollback()
         raise
+
+    # 写成功后主动失效职业相关缓存。
+    #
+    # 顺序很关键:先 commit 数据库,再删缓存(Cache-Aside 的标准做法)。
+    # 反过来先删缓存再写库会有一个危险窗口:删完缓存、库还没写完时,
+    # 另一个请求来读,会把「旧数据」重新加载进缓存,而这个旧值要等
+    # 整个 TTL 才过期——数据库已经是新的,缓存却一直是旧的。
+    #
+    # 为什么是删除而不是更新缓存:更新需要知道新值的完整形状,
+    # 而这里影响的是「职业列表的题目数」和「单个职业的题目数」两处派生数据,
+    # 重算一遍不如直接删掉、让下一次读请求自然回填。
+    # 删除是幂等的,更新则要考虑并发写的先后顺序。
+    #
+    # 只在真正写入了数据时才失效:全部跳过/失败时数据没变,没必要清缓存。
+    if created:
+        # 按前缀清:一次写入会同时影响列表和详情两类 key,
+        # 逐个删容易漏(比如忘了题干列表也缓存着)。
+        cache.delete_prefix(cache_keys.JOBS_PREFIX)
 
     return BatchQuestionsResponse(
         total=len(request.questions),

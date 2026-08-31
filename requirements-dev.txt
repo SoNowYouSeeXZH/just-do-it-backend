@@ -9,3 +9,7 @@ pytest==8.3.4
 httpx==0.28.1
 # pytest-cov:统计测试覆盖了哪些代码分支
 pytest-cov==6.0.0
+# fakeredis:纯 Python 实现的 Redis 替身,行为和真 Redis 一致(含 TTL、SCAN)。
+# 用它而不是 mock 掉整个缓存模块:mock 只能验证"调用了 set",
+# 无法验证"写进去的值能被正确读回来",而后者才是缓存逻辑的关键。
+fakeredis==2.26.2

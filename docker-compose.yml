@@ -20,16 +20,40 @@
 # 所以在删除数据卷重新初始化之前,务必先把 .env 的 MYSQL_USER 改成非 root 值。
 
 services:
+  # ============ 反向代理(Nginx)============
+  # 唯一对公网开放的服务。所有外部请求先到这里,再转发给 backend。
+  # 好处:后端和数据库面板都退回 compose 内网,公网扫描器打不到;
+  # TLS 证书只配在这一处,应用代码不用关心加解密。
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: personal-ai-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # 挂载整个 conf.d 目录(而不是单个文件):镜像自带的 default.conf 会被
+      # 一起顶掉,否则它和我们的 server 块会抢 80 端口的 default_server。
+      # :ro 只读,容器内进程改不了宿主机上的配置。
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - backend
+    restart: unless-stopped
+
   # ============ 后端服务(FastAPI)============
   backend:
     # 用当前目录下的 Dockerfile 构建镜像
     build: .
     # 给容器起个名字,方便查看和管理
     container_name: personal-ai-backend
-    # 端口映射:把宿主机(你的电脑/服务器)的 8000 映射到容器内的 8000
-    # 格式是 "宿主机端口:容器端口"
-    ports:
-      - "8000:8000"
+    # 不再向宿主机映射 8000。expose 只声明"容器内监听哪个端口",
+    # 让同一 compose 网络里的 nginx 用服务名 backend:8000 访问,
+    # 公网无法直连后端——绕过 Nginx 的限流、TLS、日志就不可能了。
+    #
+    # 本地开发想直连 8000 调试,见 docker-compose.override.yml。
+    expose:
+      - "8000"
     # 把 .env 文件里的变量注入到容器里(大模型 Key、数据库密码等)
     env_file:
       - .env
@@ -51,9 +75,47 @@ services:
     # depends_on 只是控制"启动顺序",默认不会等 MySQL 真正 ready。
     # 加 condition: service_healthy 后,backend 会等 mysql healthcheck 通过再启动,
     # 避免 backend 启动瞬间 MySQL 还没初始化完导致连接被拒。
+    #
+    # redis 用 service_started 而不是 service_healthy:缓存是 fail-open 的,
+    # Redis 没就绪时应用会自动降级为直接查库,不该因此阻塞启动。
+    # 这个区别本身就体现了"哪些依赖是必需的、哪些是可选的"。
     depends_on:
       mysql:
         condition: service_healthy
+      redis:
+        condition: service_started
+
+  # ============ 缓存(Redis 7)============
+  # 只在 compose 内网可见,不映射宿主机端口。
+  # 无密码的 Redis 暴露到公网是经典的入侵入口(可以写 crontab、传公钥),
+  # 所以这里既不映射端口,也建议在 .env 里配上 REDIS_PASSWORD。
+  redis:
+    image: redis:7-alpine
+    container_name: personal-ai-redis
+    command:
+      # requirepass 从环境变量注入,不写死在文件里
+      - sh
+      - -c
+      - >-
+        redis-server
+        --appendonly yes
+        --maxmemory 128mb
+        --maxmemory-policy allkeys-lru
+        ${REDIS_PASSWORD:+--requirepass "$$REDIS_PASSWORD"}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    # maxmemory + allkeys-lru 是缓存场景的标准配置:
+    # 内存到上限时自动淘汰最久未使用的 key,而不是写入失败。
+    # 如果不设 maxmemory,Redis 会一直吃内存直到被系统 OOM kill——
+    # 这台机器只有 1.7G 内存,必须设上限。
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
 
   # ============ 数据库(MySQL 8.0)============
   mysql:
@@ -95,13 +157,18 @@ services:
     restart: unless-stopped
 
   # ============ 数据库可视化(Adminer)============
-  # 单文件 PHP 面板,浏览器访问 http://localhost:8080 即可看表、写 SQL。
-  # 只在开发环境跑,部署时可以在 compose 里注释掉这一段,或用 profiles 控制。
+  # 单文件 PHP 面板,可看表、写 SQL。
+  # 不再向公网映射端口:数据库面板暴露在公网上等于把库门口的锁交出去
+  # (只差一个 root 密码)。需要用时在本机执行:
+  #   ssh -i <key> -L 8080:localhost:8080 ubuntu@<server>
+  # 然后本机浏览器打开 http://localhost:8080 —— 流量走 SSH 加密隧道,
+  # 服务器上不留任何公网端口。
   adminer:
     image: adminer:4
     container_name: personal-ai-adminer
+    # 只绑到宿主机 127.0.0.1,外部网卡访问不到,仅供 SSH 隧道使用
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     # 打开页面后默认服务器填 mysql(compose 服务名),用户名 root,密码就是 .env 里的那个
     environment:
       ADMINER_DEFAULT_SERVER: mysql
@@ -113,3 +180,7 @@ services:
 # named volume 由 docker 统一管理,位置不用关心,跨平台可移植。
 volumes:
   mysql_data:
+  # Nginx 日志放独立卷,容器重建不丢历史访问日志
+  nginx_logs:
+  # Redis 开了 appendonly,重启后能恢复缓存(不是必需,但能避免重启后全量穿透)
+  redis_data:

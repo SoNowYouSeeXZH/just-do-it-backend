@@ -12,12 +12,51 @@ from app.models.industry import Industry
 
 
 def test_health_check(client: TestClient) -> None:
-    """健康检查探测数据库并返回 request id。"""
+    """健康检查探测数据库并返回 request id。
+
+    cache=disabled 是因为测试默认关闭缓存(见 conftest)。
+    缓存不可用不影响 status=ok —— 它是可选依赖,fail open。
+    """
     response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "database": "ok"}
+    assert response.json() == {
+        "status": "ok",
+        "database": "ok",
+        "cache": "disabled",
+    }
     assert response.headers["x-request-id"]
+
+
+def test_health_reports_cache_ok(client: TestClient, cache_client) -> None:
+    """Redis 可用时健康检查报 cache=ok。"""
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json()["cache"] == "ok"
+
+
+def test_health_still_ok_when_cache_degraded(
+    client: TestClient, cache_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Redis 挂掉时标记 degraded,但整体仍是 ok。
+
+    缓存故障不该让实例被负载均衡摘掉——应用还能正常服务,只是慢一些。
+    但也要能被看见,所以单独标 degraded。
+    """
+
+    def boom():
+        raise RuntimeError("模拟 Redis 挂掉")
+
+    monkeypatch.setattr(cache_client, "ping", boom)
+
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["database"] == "ok"
+    assert body["cache"] == "degraded"
 
 
 def test_list_career_paths(client: TestClient, session: Session) -> None:

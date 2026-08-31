@@ -25,7 +25,11 @@
 - [09 事务边界、操作记录与幂等性](09-transactions-and-idempotency.md) — Service 控制 commit、flush/rollback、审计记录、Idempotency-Key
 - [10 自动化测试工程化与 CI 门禁](10-test-engineering-and-ci.md) — 测试分层、覆盖率、架构测试、隔离与持续集成
 - [11 日志与可观测性](11-logging-observability.md) — request_id、请求耗时、慢请求、健康检查与错误关联
+- [12 Docker、Alembic 与部署](12-docker-alembic-deployment.md) — 镜像分层、数据卷、迁移基线、生产部署顺序
+- [13 Nginx 反向代理与 HTTPS](13-nginx-reverse-proxy-and-https.md) — 为什么要反代、真实 IP 透传、SSE 不缓冲、TLS 配置、容器 DNS 缓存坑
+- [14 Redis 缓存与 Cache-Aside](14-redis-cache.md) — fail open、穿透/击穿/雪崩、失效顺序、SCAN 批量删、缓存该放哪一层
 
 ## 待补（随迭代推进）
 
-- 12 部署与数据库迁移（迭代 7）
+- 15 索引与慢查询分析（迭代 8）
+- 16 后台任务与限流（迭代 8）

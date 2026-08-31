@@ -19,6 +19,10 @@ from collections.abc import Iterator
 # 必须在 import app 之前设置:app.config 的 settings 是模块级单例,
 # 一旦 import 就会读取环境变量并固化下来。
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-pytest-only")
+# 默认关闭缓存:大部分测试断言的是"数据库里的真实状态",
+# 开着缓存会让第二次请求读到上一次的结果,断言变得不可靠。
+# 需要测缓存本身的用例用 cache_client fixture 显式打开(见 test_cache.py)。
+os.environ.setdefault("CACHE_ENABLED", "false")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,6 +30,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 import app.models  # noqa: F401 —— 触发所有表模型注册,create_all 才知道要建哪些表
+from app.core import cache
 from app.db import get_session
 from app.main import app
 
@@ -68,3 +73,26 @@ def client_fixture(session: Session, monkeypatch: pytest.MonkeyPatch) -> Iterato
         yield client
     # 用完清干净,避免影响其他测试模块
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(name="cache_client")
+def cache_client_fixture(monkeypatch: pytest.MonkeyPatch):
+    """打开缓存,并把 Redis 换成 fakeredis 内存实现。
+
+    为什么用 fakeredis 而不是 mock 掉整个 cache 模块:
+    mock 只能验证"调用了 set",无法验证"写进去的值能被正确读回来"、
+    "TTL 到了会过期"、"SCAN 能匹配到前缀"——而这些才是缓存逻辑的关键。
+    fakeredis 实现了真实的 Redis 语义,测的是行为而不是调用痕迹。
+
+    注意必须重置 cache 模块的客户端单例:它在第一次调用时缓存了实例,
+    不重置的话这里替换 settings 也不会生效。
+    """
+    import fakeredis
+
+    monkeypatch.setattr("app.config.settings.cache_enabled", True)
+    fake = fakeredis.FakeRedis(decode_responses=True)
+    # 直接替换模块级单例,绕过 redis.Redis(...) 的真实连接
+    cache.reset_client_for_tests()
+    monkeypatch.setattr(cache, "_client", fake)
+    yield fake
+    cache.reset_client_for_tests()

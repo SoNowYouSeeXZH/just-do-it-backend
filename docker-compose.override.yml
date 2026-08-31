@@ -10,6 +10,10 @@
 
 services:
   backend:
+    # 生产用 expose(仅内网可见),本地开发把 8000 放回宿主机,
+    # 这样可以直连 http://127.0.0.1:8000/docs 调试,不必每次都过 Nginx。
+    ports:
+      - "8000:8000"
     # 把本地 app 目录挂载进容器,配合下面的 --reload 实现"改代码即生效"。
     volumes:
       - ./app:/app/app

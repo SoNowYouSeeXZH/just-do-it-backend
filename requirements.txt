@@ -45,3 +45,9 @@ PyJWT==2.10.1
 # python-multipart:FastAPI 的 OAuth2PasswordBearer 依赖它解析表单,
 # 装上避免运行时报 "Form data requires python-multipart"。
 python-multipart==0.0.20
+
+# ===== 缓存 =====
+# redis:官方 Python 客户端(redis-py)。客户端内部自带连接池且线程安全,
+# 所以全局建一个实例复用即可,不要每次请求 new 一个。
+# 4.2 起已内置了原 aioredis 的异步能力,不需要额外装异步库。
+redis==5.2.1

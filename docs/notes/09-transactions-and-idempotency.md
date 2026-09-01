@@ -89,7 +89,7 @@ user_id=1
 Idempotency-Key: start-task-once
 ```
 
-幂等键的作用域应该明确。本项目使用 `(user_id, idempotency_key)` 唯一约束，同一个用户不能把一个 key 用于两个不同操作；不同用户可以各自使用同名 key。
+幂等键的作用域应该明确。常见做法是使用 `(user_id, idempotency_key)` 唯一约束，同一个用户不能把一个 key 用于两个不同操作；不同用户可以各自使用同名 key。
 
 ### 应用判断 + 数据库兜底
 
@@ -131,19 +131,6 @@ flush 将待执行 SQL 发给数据库，使数据库生成的自增 id 可用�
 **Q：异常时为什么一定要 rollback？**
 
 数据库 Session 进入失败事务状态后，后续查询和写入通常都会被拒绝；更重要的是，如果不 rollback，当前修改可能留在事务上下文里，造成后续请求使用脏状态。捕获异常后先 rollback，再决定重新抛出或转换成业务异常。
-
-## 本项目实战
-
-- `app/models/task_operation.py:14` `TaskOperationRecord` — 记录 task/user、动作、前后状态和幂等键
-- `app/models/task_operation.py:17` — `(user_id, idempotency_key)` 数据库唯一约束
-- `app/repositories/task.py:26` — Task Repository 改为 `flush`，不再提前 `commit`
-- `app/repositories/task_operation.py:26` — 操作记录 Repository 只 `add + flush`
-- `app/services/task.py:149` `transition_task` — 一个业务事务同时更新 Task 和插入操作记录
-- `app/services/task.py:180` — IntegrityError 时 rollback，并读取并发请求已提交的幂等记录
-- `app/api/tasks.py:98` — 从 `Idempotency-Key` 请求头接收幂等键
-- `app/api/tasks.py:76` — `GET /api/tasks/{task_id}/operations` 查询当前用户自己的操作记录
-- `tests/test_tasks_api.py` — 事务回滚、重复 key、key 冲突、操作记录完整性测试
-- `docs/migrations/002_task_operation_records.sql` — 生产库表结构迁移示例
 
 ## 易错点
 

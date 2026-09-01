@@ -14,7 +14,7 @@
 
 ```text
 单元测试   单个函数，无外部依赖        最快，数量最多
-集成测试   多层协作 + 真实数据库读写   本项目主力
+集成测试   多层协作 + 真实数据库读写   通常作为主要验证手段
 E2E 测试   完整链路，含前端            最慢，只覆盖关键路径
 ```
 
@@ -121,41 +121,6 @@ assert user.password_hash.startswith("$2")     # bcrypt 哈希特征
 
 这条用例守的是一个绝不能退化的安全底线：库里永远不能出现明文密码。
 
----
-
-## 本项目实战
-
-- `tests/conftest.py:34` `session_fixture` — SQLite 内存库 + StaticPool
-- `tests/conftest.py:53` `client_fixture` — `dependency_overrides` 替换 `get_session`
-- `tests/conftest.py:21` 在 import app 之前设置 `JWT_SECRET_KEY` 环境变量
-- `tests/test_user_api.py` — 10 条用例，覆盖注册/登录/鉴权
-
-### 两个环境相关的坑
-
-**配置单例的时序问题。** `app/config.py:83` 的 `settings = Settings()` 是模块级单例，一旦 import 就固化了配置。所以测试里设置环境变量必须在 `import app` **之前**：
-
-```python
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-pytest-only")
-import pytest
-from app.main import app          # 这行之后再设就来不及了
-```
-
-**启动钩子连了真实数据库。** `app/main.py:31` 的 lifespan 里调用 `init_db()` 去连 MySQL 建表，测试环境没有 MySQL 直接报连接失败。当前用 monkeypatch 绕过（`tests/conftest.py:65`）：
-
-```python
-monkeypatch.setattr("app.main.init_db", lambda: None)
-```
-
-这个 workaround 本身就暴露了一个设计问题：**应用启动流程硬编码了 DDL 操作**。正确做法是把建表交给 Alembic 迁移，应用启动时只连接不建表。测试写起来别扭往往是设计不够解耦的信号——这是迭代 7 要改的。
-
-### 依赖管理
-
-测试依赖单独放 `requirements-dev.txt`，生产镜像只装 `requirements.txt`。理由：镜像更小，攻击面更少，生产环境不该有测试框架。
-
-```text
-pytest==8.3.4
-httpx==0.28.1          # TestClient 底层依赖，不用真的起服务器监听端口
-```
 
 ---
 

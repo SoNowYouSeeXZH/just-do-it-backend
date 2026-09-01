@@ -86,18 +86,6 @@ user_id: int = Field(foreign_key="users.id", index=True)
 
 不能直接加。旧记录没有 owner，直接改成 NOT NULL 会失败；更不能随便把历史数据归给某个用户。正确流程是先明确历史数据归属策略，再备份，先加 nullable 字段，回填合法用户，校验无 NULL，最后改为 NOT NULL 并建立外键。生产迁移必须使用 Alembic 或经过审核的 SQL，不依赖 `create_all()`。
 
-## 本项目实战
-
-- `app/models/message.py:24` `user_id` — `foreign_key="users.id"` + `index=True`
-- `app/repositories/message.py:8` `list_recent(session, user_id, limit)` — 在 SQL 中按 owner 过滤
-- `app/services/chat.py:29` `list_recent_messages(..., user_id=...)` — Service 明确接收用户身份
-- `app/services/chat.py:34` `_try_save(..., user_id, ...)` — 新消息写入时绑定 owner
-- `app/api/chat.py:25` `get_current_user_id` — 对话接口必须登录，避免匿名消息没有 owner
-- `app/api/messages.py:24` `_user_id` — 从已验签 JWT 注入当前用户，而不是信任请求参数
-- `tests/test_authorization.py:23` — 用户 A 只能看到 A 的消息，B 的内容不出现在响应
-- `tests/test_authorization.py:43` — user/assistant 两条新消息都绑定当前用户
-- `docs/migrations/001_add_chat_message_owner.sql` — 生产库历史数据迁移示例
-
 ## 易错点
 
 - **只验 token，不验资源归属。** 这是本阶段修复的原始漏洞。

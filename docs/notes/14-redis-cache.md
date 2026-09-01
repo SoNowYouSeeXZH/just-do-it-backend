@@ -11,7 +11,7 @@
 ### 三种缓存模式
 
 ```text
-Cache-Aside（旁路缓存）—— 本项目采用
+Cache-Aside（旁路缓存）—— 常见做法是
   应用主动读缓存 → 未命中查库 → 回写缓存
   应用完全掌控读写与失效时机，最常见、最可控
 
@@ -40,7 +40,7 @@ Write Behind（回写）
   结果：Redis 挂了只是变慢，不影响可用性
 ```
 
-本项目 `app/core/cache.py` 里所有 Redis 操作都包在 `try/except redis.RedisError` 里，出错返回 `None`（等于未命中）。`get_client()` 在未启用或连接失败时返回 `None` 而不是抛异常，让调用方用最自然的方式降级。
+缓存基础设施层应将 Redis 操作包在 `try/except redis.RedisError` 中，出错返回 `None`（等于未命中）。客户端未启用或连接失败时也应返回 `None` 而不是抛异常，让调用方自然降级。
 
 有个实现细节：降级时不能每个请求都打一条 ERROR 日志，否则 Redis 挂掉的同时日志系统也被打爆。用一个 `_degraded` 标志，只在状态从"正常"翻转到"降级"的那一次记录（`cache.py:50`）。
 
@@ -63,13 +63,13 @@ Write Behind（回写）
   解法：TTL 加随机抖动；多级缓存
 ```
 
-本项目做了穿透和雪崩的防护，**击穿没做**——它需要分布式锁或 single flight，对当前量级是过度设计；真需要时应该只给少数热点 key 加，而不是让所有查询都付锁的代价。这个取舍在 `cache.py` 的 `cache_aside` 文档里写明了，是有意的空白而不是遗漏。
+基础方案通常会优先处理穿透和雪崩，击穿是否处理取决于热点程度——它需要分布式锁或 single flight，对当前量级是过度设计；真需要时应该只给少数热点 key 加，而不是让所有查询都付锁的代价。这个取舍在 `cache.py` 的 `cache_aside` 文档里写明了，是有意的空白而不是遗漏。
 
 ### 防穿透：哨兵值区分"没缓存"和"缓存了空"
 
 难点在于"空"的表达。如果直接存空字符串或 `"null"`，就无法和"业务数据本身是 null"区分。
 
-本项目用一个业务上不可能出现的字符串当哨兵：
+可以用一个业务上不可能出现的字符串当哨兵：
 
 ```python
 _NULL_SENTINEL = "__cache_null__"     # cache.py:44
@@ -81,7 +81,7 @@ if raw == _NULL_SENTINEL:
 
 判断用 `is CachedNull`（类对象身份比较），不会和任何业务值相等，也不需要额外分配对象。
 
-空值的 TTL 必须**明显短于**正常数据（本项目 30s vs 300s）。它只是挡穿透的临时挡板，不是真数据——如果和正常数据一样存 5 分钟，那么新建一个资源后，之前访问过的人要等 5 分钟才能看到。
+空值的 TTL 必须**明显短于**正常数据（例如 30s，明显短于正常数据的 TTL）。它只是挡穿透的临时挡板，不是真数据——如果和正常数据一样存 5 分钟，那么新建一个资源后，之前访问过的人要等 5 分钟才能看到。
 
 ### 防雪崩：TTL 抖动
 
@@ -110,7 +110,7 @@ def _ttl_with_jitter(base: int) -> int:   # cache.py:79
 ### 为什么是删除而不是更新
 
 ```text
-删除（本项目采用）
+删除（常见做法）
   幂等，不用考虑并发写的先后顺序
   下一次读请求自然回填
 
@@ -119,7 +119,7 @@ def _ttl_with_jitter(base: int) -> int:   # cache.py:79
   两个并发写可能以错误顺序落到缓存（写 A → 写 B → 缓存 B → 缓存 A）
 ```
 
-本项目题库写入影响的是「职业列表的题目数」和「单个职业的题目数」两处**派生数据**，重算不如直接删掉。
+如果一次写入影响的是「职业列表的题目数」和「单个职业的题目数」两处**派生数据**，重算不如直接删掉。
 
 还有一个细节：只在**真正写入了数据**时才失效（`question_bank.py:237` 的 `if created:`）。全部跳过或失败时数据没变，清缓存是白付一次回源成本。
 
@@ -134,13 +134,13 @@ SCAN cursor MATCH pattern COUNT n
   游标式分批扫描，不长时间占住服务
 ```
 
-本项目用 `client.scan_iter(match=f"{prefix}*", count=100)`（`cache.py:169`），`scan_iter` 内部自动管理游标翻页。
+可以使用 Redis 客户端提供的 `scan_iter`，`scan_iter` 内部自动管理游标翻页。
 
 用前缀而不是逐个删 key，是因为一次写入会影响多类派生缓存（列表题目数、详情题目数、题干列表），逐个删容易漏。
 
 ### 缓存该放哪一层
 
-本项目放在 **Service** 层，不是 Repository：
+通常放在 **Service** 层，而不是 Repository：
 
 ```text
 放 Service
@@ -169,7 +169,7 @@ JSON
 
 判断标准是"**同样的输入是否应该得到同样的输出**"，而不是"这个接口是不是读接口"。
 
-本项目 `sample_questions`（随机抽题）故意不缓存——它的语义就是每次返回不同的题，缓存会让随机性失效，用户重复进入同一职业会一直看到同一批题。
+随机抽题这类接口故意不缓存——它的语义就是每次返回不同的题，缓存会让随机性失效，用户重复进入同一职业会一直看到同一批题。
 
 但它复用了带缓存的 `get_job` 做存在性校验（`job.py` 里 `get_job(session, job_id)`），所以恶意刷不存在的 id 也不会每次打到数据库。这是一个"部分缓存"的例子：把可缓存的那一半拆出来。
 
@@ -180,7 +180,7 @@ JSON
 缓存不可用   → 标记 degraded → 仍然 200
 ```
 
-把缓存算成"不健康"会导致实例被误摘，反而放大故障。但也不能完全不报，所以本项目用三个状态：`ok` / `disabled`（有意关闭）/ `degraded`（连不上，需要有人看一眼）。见 `app/services/health.py:25`。
+把缓存算成"不健康"会导致实例被误摘，反而放大故障。但也不能完全不报，所以可以用三个状态：`ok` / `disabled`（有意关闭）/ `degraded`（连不上，需要有人看一眼）。并在健康检查中明确区分缓存降级状态。
 
 注意 `_cache_status()` 里刻意 catch 了宽异常——健康检查本身不能因为探测失败而抛错，否则缓存故障会连带把整个健康检查打成 500，数据库正常也被误判。
 
@@ -197,7 +197,7 @@ JSON
 
 超时必须设小值
   缓存是为了更快，Redis 卡住时若无限等待，
-  加缓存反而比不加更慢（本项目设 0.5s）
+  加缓存反而比不加更慢（例如设置为 0.5s）
 
 depends_on 用 service_started 而不是 service_healthy
   缓存是 fail-open 的，Redis 没就绪时应用会自动降级，
@@ -224,7 +224,7 @@ depends_on 用 service_started 而不是 service_healthy
 
 **Q：怎么缓存"查不到"这个结果？直接存 null 有什么问题？**
 
-直接存 null 或空字符串无法区分"这个 key 没被缓存过"和"缓存里明确记着数据库也没有"。需要一个业务上不可能出现的哨兵值（本项目用 `__cache_null__`），读出来时翻译成一个专门的标记。空值的 TTL 要明显短于正常数据，因为它不是真数据只是挡板——否则新建资源后，之前访问过的用户要等一个完整 TTL 才能看到。
+直接存 null 或空字符串无法区分"这个 key 没被缓存过"和"缓存里明确记着数据库也没有"。需要一个业务上不可能出现的哨兵值（例如使用 `__cache_null__`），读出来时翻译成一个专门的标记。空值的 TTL 要明显短于正常数据，因为它不是真数据只是挡板——否则新建资源后，之前访问过的用户要等一个完整 TTL 才能看到。
 
 **Q：按前缀批量删除缓存，为什么不能用 KEYS？**
 
@@ -236,7 +236,7 @@ Redis 是单线程的，`KEYS` 会一次遍历整个 keyspace 并在此期间阻
 
 **Q：所有读接口都应该加缓存吗？**
 
-不是。判断标准是"同样的输入是否应该得到同样的输出"。本项目的随机抽题接口就不能缓存——它的语义是每次返回不同的题，缓存会让随机性失效。但可以把接口里可缓存的部分拆出来：抽题前的"职业是否存在"校验走缓存，这样恶意刷不存在的 id 也不会打到数据库。此外强一致性要求高的数据（余额、库存）也要谨慎。
+不是。判断标准是"同样的输入是否应该得到同样的输出"。随机抽题接口就不能缓存——它的语义是每次返回不同的题，缓存会让随机性失效。但可以把接口里可缓存的部分拆出来：抽题前的"职业是否存在"校验走缓存，这样恶意刷不存在的 id 也不会打到数据库。此外强一致性要求高的数据（余额、库存）也要谨慎。
 
 **Q：缓存用 JSON 还是 pickle 序列化？**
 
@@ -245,55 +245,6 @@ JSON。pickle 反序列化可以执行任意代码，一旦有人能写 Redis �
 **Q：Redis 部署时有哪些必须做的配置？**
 
 不映射公网端口（无密码 Redis 暴露公网可被写 crontab、传 SSH 公钥，是经典入侵入口），即使内网也建议配 requirepass；必须设 `maxmemory` 和淘汰策略（如 `allkeys-lru`），否则会一直吃内存到被 OOM kill；连接和读写超时必须设小值，否则 Redis 卡住时加了缓存反而比不加更慢。
-
-## 本项目实战
-
-- `app/core/cache.py:44` — `_NULL_SENTINEL` 空值哨兵，区分"没缓存"和"缓存了空"
-- `app/core/cache.py:50` — `_degraded` 标志，避免降级时日志刷屏
-- `app/core/cache.py:53` — `get_client()` 返回 None 而非抛异常，让降级最自然
-- `app/core/cache.py:79` — `_ttl_with_jitter` TTL 抖动防雪崩
-- `app/core/cache.py:90` — `get()` fail open，异常时当未命中
-- `app/core/cache.py:126` — `set_value()` 空值写哨兵 + 短 TTL
-- `app/core/cache.py:155` — `delete_prefix()` 用 SCAN 而非 KEYS
-- `app/core/cache.py:177` — `CachedNull` 标记类
-- `app/core/cache.py:185` — `cache_aside()` 旁路缓存统一实现（含击穿未处理的说明）
-- `app/core/cache_keys.py` — key 集中定义，读取方与失效方共用同一套规则
-- `app/services/job.py:47` — 职业列表整体缓存
-- `app/services/job.py:60` — 职业详情，返回 None 让空结果也能被缓存
-- `app/services/job.py:103` — 题干列表缓存（不含答案）
-- `app/services/job.py` `sample_questions` — 抽题不缓存，但存在性校验走缓存
-- `app/services/industry.py` — 行业列表/详情缓存，返回类型改为 DTO
-- `app/services/question_bank.py:237` — 写入成功后按前缀失效，只在 created 时执行
-- `app/services/health.py:25` — 缓存状态 ok/disabled/degraded 三态
-- `app/config.py:37` — `cache_enabled` 开关，排查时可关闭
-- `app/config.py:46` — 基础 TTL 300s 与空值 TTL 30s
-- `app/config.py:51` — Redis 超时 0.5s
-- `docker-compose.yml` — redis 服务不映射端口、maxmemory 128mb + allkeys-lru、depends_on 用 service_started
-- `tests/conftest.py` — 默认关闭缓存；`cache_client` fixture 用 fakeredis
-- `tests/test_cache.py` — 14 个用例，覆盖命中/穿透/雪崩/失效/降级/序列化
-
-## 测试方法论
-
-这一轮测试有两处值得记住的做法。
-
-**用 fakeredis 而不是 mock。** mock 只能断言"调用了 `redis.set`"，无法验证"写进去的值能被正确读回来"、"TTL 到了会过期"、"SCAN 能匹配到前缀"——而这些才是缓存逻辑的关键。fakeredis 实现了真实的 Redis 语义，测的是行为而不是调用痕迹。
-
-**用计数器验证"真的没查库"。** 判断缓存是否命中，不去检查 `redis.get` 被调用过，而是给 Repository 函数套一个计数器，断言第二次请求时计数没有增加。这更贴近我们真正关心的事情：省掉了数据库查询。
-
-```python
-calls = {"n": 0}
-original = job_repo.list_jobs
-def counted(*args, **kwargs):
-    calls["n"] += 1
-    return original(*args, **kwargs)
-monkeypatch.setattr(job_repo, "list_jobs", counted)
-
-client.get("/api/jobs")
-client.get("/api/jobs")
-assert calls["n"] == 1     # 第二次命中缓存
-```
-
-另外做了一次**反向验证**：临时把 `question_bank.py` 里的 `cache.delete_prefix` 注释掉，确认 `test_write_invalidates_job_cache` 确实失败，然后还原。这一步能证明测试真的在守护那段逻辑，而不是恰好通过——"测试通过"和"测试有效"是两件事。
 
 ## 易错点
 

@@ -21,7 +21,7 @@
   一次请求从网关到 API、Service、数据库、上游服务经过了什么
 ```
 
-当前项目先实现日志基础设施和请求级关联；Metrics/Tracing 需要后续接入 Prometheus/OpenTelemetry 等系统，不能只靠打印日志假装完成。
+基础方案先实现日志基础设施和请求级关联；Metrics/Tracing 需要后续接入 Prometheus/OpenTelemetry 等系统，不能只靠打印日志假装完成。
 
 ### request_id
 
@@ -40,7 +40,7 @@
 
 ### 慢请求
 
-平均耗时会掩盖尾部问题。一个接口平均 30ms，但 1% 请求耗时 3s，用户仍会明显感到卡顿。因此生产环境通常关注 P95/P99；当前项目先实现固定阈值：超过 `slow_request_ms` 就从 INFO 升级为 WARNING。
+平均耗时会掩盖尾部问题。一个接口平均 30ms，但 1% 请求耗时 3s，用户仍会明显感到卡顿。因此生产环境通常关注 P95/P99；基础方案先实现固定阈值：超过 `slow_request_ms` 就从 INFO 升级为 WARNING。
 
 阈值通过环境变量配置：
 
@@ -68,7 +68,7 @@ readiness 关键依赖是否就绪，能否接收流量
 }
 ```
 
-如果数据库不可用，健康检查应失败，让容器编排或负载均衡停止向这个实例发送流量。生产系统通常会把 liveness 和 readiness 拆成两个接口，避免数据库短暂故障导致进程被反复重启；当前项目先保持一个简单接口。
+如果数据库不可用，健康检查应失败，让容器编排或负载均衡停止向这个实例发送流量。生产系统通常会把 liveness 和 readiness 拆成两个接口，避免数据库短暂故障导致进程被反复重启；基础方案先保持一个简单接口。
 
 ### 用户信息和日志脱敏
 
@@ -99,22 +99,6 @@ readiness 关键依赖是否就绪，能否接收流量
 **Q：客户端传来的 request_id 能直接写日志吗？**
 
 不能完全信任。它会进入日志，如果允许换行或特殊控制字符，攻击者可能伪造日志内容；过长字符串还会污染日志系统。应限制字符集和长度，不合法时服务端重新生成。跨服务追踪需要透传时，也必须先校验。
-
-## 本项目实战
-
-- `app/core/middleware.py:20` `_request_id` — 校验/生成 request_id，防日志注入
-- `app/core/middleware.py:35` `RequestLoggingMiddleware` — 记录方法、路径、状态码、耗时
-- `app/core/middleware.py:52` — 超过 `slow_request_ms` 使用 WARNING
-- `app/config.py:28` — `log_level` 和 `slow_request_ms` 环境配置
-- `app/main.py:24` — 日志级别由配置决定
-- `app/main.py:63` — 注册请求日志中间件
-- `app/core/handlers.py:31` — 业务异常日志关联 request_id
-- `app/core/handlers.py:48` — 未预期异常日志保存完整堆栈与 request_id
-- `app/repositories/health.py:6` — 数据库 `SELECT 1` 探针
-- `app/services/health.py:7` — 健康检查业务入口
-- `app/main.py:82` — `/api/health` 调用健康检查
-- `tests/test_smoke_api.py:75` — request_id 透传与非法值替换
-- `tests/test_smoke_api.py:92` — 慢请求 WARNING 日志测试
 
 ## 易错点
 

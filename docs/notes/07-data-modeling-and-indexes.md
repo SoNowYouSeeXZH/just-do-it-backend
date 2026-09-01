@@ -98,7 +98,7 @@ JSON 列：子数据永远和整行一起读、一起写（选项列表、要点
 
 **Q：外键和索引有什么区别？必须一起加吗？**
 
-外键保证引用完整性（不能指向不存在的行），索引保证查询性能。它们解决不同问题。外键本身不会自动建索引（MySQL/PostgreSQL 行为不同），所以「按外键列查询」时通常要显式加索引。本项目 `chat_messages.user_id` 同时声明 `foreign_key` 和 `index=True`，就是两者各司其职。
+外键保证引用完整性（不能指向不存在的行），索引保证查询性能。它们解决不同问题。外键本身不会自动建索引（MySQL/PostgreSQL 行为不同），所以「按外键列查询」时通常要显式加索引。因此，按外键列查询时通常应同时声明外键和索引，让两者各司其职。
 
 **Q：主键用自增 int 还是业务字符串？**
 
@@ -114,25 +114,7 @@ JSON 列：子数据永远和整行一起读、一起写（选项列表、要点
 
 **Q：`created_at` 为什么要建索引？**
 
-「按时间倒序取最近 N 条」这种查询，没有索引时数据库要么全表扫描再排序，要么无法高效定位。给 `created_at` 建索引后，配合 `ORDER BY created_at DESC LIMIT N` 可以直接走索引逆序取前 N 行。本项目 `list_recent` 就是这个模式。
-
-## 本项目实战
-
-- `app/models/user.py:23` `id` — 自增主键，`Optional[int]` + `default=None` 是 SQLModel 惯用法
-- `app/models/user.py:27` `username` — `unique=True` + `index=True`，登录走索引、注册靠唯一约束兜底竞态
-- `app/models/user.py:38` `created_at` — `default_factory=datetime.now` + `index=True`，支持按时间倒序查询
-- `app/models/message.py:27` `user_id` — `foreign_key="users.id"` + `index=True`，外键保正确、索引保性能
-- `app/models/message.py:31` `role` + `:41` `created_at` — 两个索引分别支撑按角色、按时间过滤
-- `app/models/job.py:31` `Job.id` — 业务字符串主键（`frontend`/`backend`...），省去 id 转换层
-- `app/models/job.py:53` `Question.job_id` — 外键 + 索引，让「按职业抽题」先缩范围再随机
-- `app/models/job.py:65` `options` / `:71` `answer_indices` — JSON 列，永远和题目一起读写，不拆子表
-- `app/models/job.py:82` `content_hash` — `unique=True` + `index=True`，爬取去重的兜底约束
-- `app/models/industry.py:30` `key_points` — JSON 列，纯只读知识条目无独立查询需求
-- `app/services/user.py:55-66` `register` — 不先查重，直接插入并捕获 `IntegrityError` 翻译为业务异常
-- `app/repositories/user.py:40-43` `insert` — `commit` 后 `refresh` 回读自增 id 与 `created_at`
-- `app/repositories/message.py:14-20` `list_recent` — `WHERE user_id` + `ORDER BY created_at DESC` + `LIMIT`，三个索引共同支撑
-- `app/repositories/question_bank.py:13-25` `existing_hashes` — 按 `content_hash` 索引取已有指纹集合做去重
-- `docs/migrations/001_add_chat_message_owner.sql:24-28` — 生产迁移示例：先加可空列、回填、再收紧 NOT NULL 并建索引与外键
+「按时间倒序取最近 N 条」这种查询，没有索引时数据库要么全表扫描再排序，要么无法高效定位。给 `created_at` 建索引后，配合 `ORDER BY created_at DESC LIMIT N` 可以直接走索引逆序取前 N 行。这就是“按时间倒序取最近 N 条”查询的典型模式。
 
 ## 易错点
 

@@ -66,7 +66,7 @@ class UserCredentials(BaseModel):
 
 安全和稳定性两个原因。
 
-安全上，`Users` 表里有 `password_hash`。直接返回就泄露了。用 `exclude` 排除也不可靠——那是黑名单思路，依赖每个接口都记得写。
+安全上，用户表里通常有密码哈希这类字段。直接返回就泄露了。用排除字段的方式也不可靠——那是黑名单思路，依赖每个接口都记得写。
 
 稳定性上，数据库表结构和 API 契约演进节奏不同。加一个内部字段不该影响 API 响应，但直接返回 ORM 模型就会。
 
@@ -85,7 +85,7 @@ class LoginData(UserPublic):     # 登录时额外带 token
     token_type: str = "bearer"
 ```
 
-`LoginData` 复用了 `UserPublic` 的三个字段。见 `app/schemas/user.py:43`。
+`LoginData` 复用了 `UserPublic` 的三个字段，登录接口只需要在此基础上加两个字段。
 
 另外这个「重复」本身有价值——它是一道显式的边界。改表结构时不会意外改变 API，因为你得主动去改 DTO 才行。
 
@@ -103,29 +103,13 @@ Service 层：用户名是否已存在、任务状态是否允许流转、余额
 
 **Q：`from_attributes=True` 是干什么的？**
 
-Pydantic 默认从 dict 读数据。`from_attributes=True`（Pydantic v1 里叫 `orm_mode`）让它从对象属性读，这样才能直接接受 ORM 实例。见 `app/api/user.py:61`。
+Pydantic 默认从 dict 读数据。`from_attributes=True`（Pydantic v1 里叫 `orm_mode`）让它从对象属性读，这样才能直接接受 ORM 实例。
 
 **Q：统一响应外壳（`{code, message, data}`）有必要吗？**
 
 有争议。好处是前端处理逻辑统一。坏处是丢掉了 HTTP 语义——如果 HTTP 状态码永远 200，监控和网关就看不出错误。
 
-我的实践是两者结合：HTTP 状态码保持真实语义，响应体再带一层结构化信息。这个项目就是这么做的：409 冲突时 HTTP 状态码是 409，响应体里也有 `code: 409` 和 `error: "USERNAME_TAKEN"`。
-
----
-
-## 本项目实战
-
-- `app/schemas/user.py:21` `UserCredentials` — 登录注册共用请求体，含长度校验
-- `app/schemas/user.py:35` `UserPublic` — 公开字段白名单，无 `password_hash`
-- `app/schemas/user.py:43` `LoginData` — 继承 `UserPublic` 加 token
-- `app/api/user.py:61` `UserPublic.model_validate(user, from_attributes=True)`
-- `tests/test_user_api.py:39` 专门断言 `"password_hash" not in body["data"]`
-
-### 已知待改进
-
-`jobs.py` / `careers.py` / `industries.py` 等只读接口仍直接把 SQLModel 表模型当 `response_model`。这些表目前没有敏感字段，所以还不算漏洞，但同样的隐患在：哪天给 `Question` 表加一个 `internal_difficulty_score` 之类的内部字段，它会自动出现在给前端的响应里。
-
----
+更推荐的实践是两者结合：HTTP 状态码保持真实语义，响应体再带一层结构化信息。比如 409 冲突时 HTTP 状态码就是 409，响应体里也带上机器可读的错误标识，两者互相印证而不是互相替代。
 
 ## 易错点
 

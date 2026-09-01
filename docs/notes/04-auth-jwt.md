@@ -59,7 +59,7 @@ eyJhbGciOiJIUzI1NiJ9 . eyJzdWIiOiIxIiwiZXhwIjoxNzMwfQ . 4f2a8b...
 - 维护黑名单（但这就重新引入了状态，削弱了 JWT 的优势）
 - payload 里放 `password_changed_at`，校验时和库里比对
 
-这个项目目前 token 有效期 7 天且无 Refresh 机制——够用但不够安全，属于已知取舍。
+如果 Access Token 有效期过长且没有 Refresh 机制，虽然实现简单，但安全性会下降。
 
 ### fail closed
 
@@ -105,7 +105,7 @@ JWT      服务端不存状态，签名自证
 
 防用户名枚举。如果分开提示，攻击者可以拿一个字典批量试，先摸清系统里有哪些账号存在，再对这批真实账号做撞库——攻击成本大幅降低。
 
-这个项目 `services/user.py:24` 的 `authenticate` 里，两种情况抛的是同一个 `InvalidCredentialsError`，消息也完全一样。`tests/test_user_api.py:94` 专门有一条用例断言两种失败的响应完全一致。
+正确做法是无论「用户不存在」还是「密码错误」，都返回同一段提示文案，两种失败在响应上完全无法区分。
 
 **Q：401 和 403 的区别？**
 
@@ -126,39 +126,8 @@ Access Token 短期（15 分钟）+ Refresh Token 长期（7 天）。Access 过
 - 验证码：失败若干次后触发
 - 账号锁定：需谨慎，会被用来恶意锁别人的账号
 
-这个项目目前**没有限流**，是已知缺口。
+如果登录接口没有限流，就存在暴力破解风险，需要补充限流和异常防护。
 
----
-
-## 本项目实战
-
-- `app/core/security.py:19` `hash_password` — passlib + bcrypt
-- `app/core/security.py:16` `CryptContext(schemes=["bcrypt"], deprecated="auto")` — `deprecated="auto"` 是为未来换算法留的口子：老哈希仍可校验，新密码用新算法
-- `app/services/auth.py:23` `_require_secret()` — fail closed
-- `app/services/auth.py:34` `create_access_token` — payload 只放 `sub` / `username` / `exp`
-- `app/services/auth.py:46` `decode_access_token` — 纯逻辑，返回 user_id
-- `app/api/deps.py:31` `get_current_user_id` — HTTP 层，补 `WWW-Authenticate` 头
-- `app/models/user.py:31` `password_hash: str = Field(max_length=255)` — 留足余量给未来的 argon2
-- `app/api/admin.py:31` `secrets.compare_digest` — 常量时间比较，防时序攻击
-
-### 常量时间比较
-
-```python
-if api_key != settings.admin_api_key:      # 危险
-if not secrets.compare_digest(api_key, settings.admin_api_key):  # 正确
-```
-
-`!=` 逐字符比较，第一个字符不匹配就返回——攻击者能从响应时间的微小差异推断出正确前缀，逐位猜出整个密钥。`compare_digest` 无论如何都比完全部字符，耗时恒定。
-
-### 版本坑（真实踩到）
-
-`passlib==1.7.4` 配 `bcrypt>=5.0` 会报：
-
-```text
-ValueError: password cannot be longer than 72 bytes
-```
-
-原因是 passlib 探测 bcrypt 后端时用了已被移除的接口。必须锁 `bcrypt==4.0.1`。同类问题：bcrypt 4.1+ 删了 `__about__` 模块，passlib 读它会报 `AttributeError`。
 
 ---
 

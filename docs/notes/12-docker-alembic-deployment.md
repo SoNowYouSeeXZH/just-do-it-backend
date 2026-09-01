@@ -17,7 +17,7 @@ Dockerfile  → 如何构建镜像
 数据卷      → 独立于容器生命周期的持久化数据
 ```
 
-本项目的 MySQL 数据在 named volume `justdoit-backend_mysql_data` 中。重建 backend 容器不会删除 MySQL 数据；`docker compose down -v` 才会删除数据卷，是破坏性操作。
+数据库数据在 named volume `justdoit-backend_mysql_data` 中。重建 backend 容器不会删除 MySQL 数据；`docker compose down -v` 才会删除数据卷，是破坏性操作。
 
 ### `create_all()` 和 Alembic
 
@@ -38,7 +38,7 @@ alembic stamp 0001_baseline
 
 `stamp` 只记录版本号，不执行建表或修改字段。之后新结构变化必须创建新的 revision。
 
-本次服务器实际结构此前由手工 SQL 创建，确认一致后在新容器中执行了：
+已有数据库的实际结构经人工核对后，可以使用以下方式标记基线：
 
 ```text
 alembic stamp 0001_baseline
@@ -75,37 +75,11 @@ DDL 可能自动提交，部分数据库的结构操作不能像普通 DML 一�
 
 **Q：为什么数据库密码不能写在 alembic.ini？**
 
-配置文件会进入代码仓库和镜像，密码泄露后影响整个数据库。迁移配置应从环境变量读取，和应用使用同一份受保护的运行时配置。本项目 `alembic/env.py` 从 `settings.database_url` 读取。
+配置文件会进入代码仓库和镜像，密码泄露后影响整个数据库。迁移配置应从环境变量读取，和应用使用同一份受保护的运行时配置。迁移环境配置 从 `settings.database_url` 读取。
 
 **Q：部署失败怎么回滚？**
 
 代码回滚和数据库回滚必须分别评估。代码可以切换到上一镜像；数据库只有在对应 downgrade 经过演练、且数据变更可逆时才能 downgrade，否则应停止发布并从备份恢复。不能把 `docker compose down -v` 当作回滚，那会删除持久化数据。
-
-## 本项目实战
-
-- `Dockerfile:20` — 安装生产依赖，包含 Alembic
-- `Dockerfile:25` — 复制 `app/`、`alembic.ini` 和 `alembic/` 进入镜像
-- `docker-compose.yml:50` — backend 自动重启；MySQL 使用 healthy 条件
-- `docker-compose.yml:84` — named volume 持久化 MySQL 数据
-- `app/main.py:31` — 生产环境跳过 `create_all()`，要求提前迁移
-- `alembic/env.py:18` — 从 settings 读取数据库 URL，加载 SQLModel metadata
-- `alembic/versions/0001_baseline.py:1` — 已有结构的空基线，不自动改表
-- `docs/migrations/001_tasks.sql` — tasks 表迁移 SQL
-- `docs/migrations/002_task_operation_records.sql` — 操作记录表迁移 SQL
-- `docs/migrations/001_add_chat_message_owner.sql` — 聊天 owner 字段的两阶段迁移说明
-- `/home/ubuntu/backup-justdoit-20260819-143041/personal_ai-before-task-migration.sql` — 生产迁移前备份
-
-本次服务器实际结果：
-
-```text
-backend 镜像构建成功
-backend 容器重建成功
-MySQL healthy，未重启
-Alembic current = 0001_baseline (head)
-/api/health = 200，database=ok
-/api/tasks 未认证 = 401
-/api/messages 未认证 = 401
-```
 
 ## 易错点
 

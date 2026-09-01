@@ -100,27 +100,11 @@ if task is None or task.user_id != user_id:
 
 **Q:软删除后,查询怎么保证不漏带过滤?**
 
-把 `deleted_at IS NULL` 收敛在 Repository 层,所有读取入口都带上。上层 Service / API 不直接写查询,自然不会漏。本项目 `list_active` / `find_active_by_id` 都在 Repository 内部加了过滤,Service 只调用这些函数。如果哪天有人绕过 Repository 直接 `session.get(Task, id)`,就会漏——这正是架构测试守"API/Service 不直接构造查询"的意义。
+把 `deleted_at IS NULL` 收敛在 Repository 层,所有读取入口都带上。上层 Service / API 不直接写查询,自然不会漏。所有读取方法都应在 Repository 内部加上过滤,上层只调用这些方法。如果有人绕过 Repository 直接按主键查询,就可能漏掉已删除数据——这正是架构约束和代码审查需要防范的问题。
 
 **Q:分页接口的 total 应该是全表数还是筛选后的数?**
 
 筛选后的数。前端算总页数用 `ceil(total / page_size)`,如果 total 是全表数而 items 是筛选后的,页数就错了。total 必须和 items 用同一组 WHERE 条件 count 出来。
-
-## 本项目实战
-
-- `app/models/task.py:42` `deleted_at` — `datetime | None` + `index=True`,软删除时间戳,索引支撑"未删除"过滤
-- `app/models/task.py:33` `status` — `VARCHAR(16)` + `index=True`,状态机当前节点,索引支撑按状态筛选
-- `app/repositories/task.py:76` `list_active` — `user_id` + `deleted_at IS NULL` 过滤下推到 SQL,分页用 `offset/limit`,同时返回 `count`
-- `app/repositories/task.py:107` `soft_delete` — 只 `UPDATE deleted_at`,不 `DELETE` 行
-- `app/services/task.py:31` `_TRANSITIONS` — 状态机转换表,合法路径只有一份实现
-- `app/services/task.py:42` `_EDITABLE_STATUSES` — 终态任务不可编辑正文,业务规则集中定义
-- `app/services/task.py:87` `get_owned_task` — 所有权授权落地点,"不存在"和"不属于你"统一 404
-- `app/services/task.py:142` `transition_task` — 查转换表,非法动作抛 `TaskStateError`(409)
-- `app/core/exceptions.py:108` `TaskStateError` — `code=TASK_STATE_CONFLICT`、`status_code=409`
-- `app/api/tasks.py:95` `POST /tasks/{task_id}/{action}` — 用动作名而非 PATCH status,防止绕过状态机
-- `app/api/tasks.py:43` `GET /tasks` — 分页 + 状态筛选,`Query(ge=1)` / `Query(ge=1, le=100)` 兜底校验
-- `app/schemas/task.py:60` `TaskPage` — 统一分页外壳 `{items, total, page, page_size}`
-- `tests/test_tasks_api.py` — 越权 404、状态机合法/非法转换、终态不可编辑、软删除行仍在库、分页筛选
 
 ## 易错点
 

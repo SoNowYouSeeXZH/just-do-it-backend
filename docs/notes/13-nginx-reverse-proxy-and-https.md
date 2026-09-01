@@ -102,7 +102,7 @@ Nginx 配 proxy_buffering off
   在代理层显式关闭，不依赖后端行为。
 ```
 
-本项目两者都做了（`app/api/chat.py:41` 返回该头，`nginx/conf.d/locations.inc` 里也显式关闭），属于双保险。
+推荐同时在应用层和代理层关闭缓冲，形成双保险。
 
 流式接口还有两个配套设置容易漏：`proxy_read_timeout` 要放大（默认 60s，大模型生成经常超过），以及 `proxy_http_version 1.1` + `proxy_set_header Connection ""`（默认会发 `Connection: close`，长连接会被立刻关掉）。
 
@@ -142,7 +142,7 @@ CA 签发（Let's Encrypt 免费）
 
 **HSTS 在自签名阶段绝对不能开**。`Strict-Transport-Security` 会让浏览器记住"以后只准用 HTTPS 访问这个站"，在证书不可信时下发，等于把自己锁死——浏览器会直接拒绝访问且用户无法点"继续"。换成正式证书后再加。
 
-### 容器化下的 DNS 缓存坑（本项目实际踩到）
+### 容器化下的 DNS 缓存坑（常见）
 
 这是这一轮最值得记住的问题。开源版 Nginx 只在**配置加载时**解析一次 `upstream` 里的主机名，然后把 IP 永久缓存：
 
@@ -177,7 +177,7 @@ proxy_pass http://$backend_origin$request_uri;   # 含变量 → 每次解析
 官方镜像的主配置里有 `include /etc/nginx/conf.d/*.conf;`，且这行位于 `http { }` 块内部。由此推出两条实践：
 
 - 挂载**整个 conf.d 目录**而不是单个文件，可以顶掉镜像自带的 `default.conf`，避免两个 `default_server` 抢 80 端口。
-- 被 server 块 include 的公共片段（本项目的 `locations.inc`、`proxy_headers.inc`）**不能用 `.conf` 后缀**。否则它们会被顶层 include 到 http 块，而 `location` 只能出现在 server 内，Nginx 直接启动失败。
+- 被 server 块 include 的公共片段（公共配置片段）**不能用 `.conf` 后缀**。否则它们会被顶层 include 到 http 块，而 `location` 只能出现在 server 内，Nginx 直接启动失败。
 
 ### reload vs restart
 
@@ -225,27 +225,6 @@ HSTS 让浏览器记住"这个域名以后只准用 HTTPS"，并且在证书不�
 **Q：安全组放行了端口，但访问不通，怎么排查？**
 
 分层判断。云安全组在虚拟机网卡之前，决定流量能否进入主机；主机上还得有进程真正监听那个端口。用 `ss -tlnp` 看监听、`curl` 从外部看连通性。反过来也成立：把后端从 `ports` 改成 `expose` 后，即使安全组还放行着那个端口，公网也连不上，因为门后面已经没有服务了——这时应该顺手删掉过期的安全组规则，属于纵深防御。
-
-## 本项目实战
-
-- `nginx/conf.d/justdoit.conf:18` — `server_tokens off`，不暴露版本号
-- `nginx/conf.d/justdoit.conf:26` — 自定义 `log_format`，含 `$request_id`、`$request_time`、`$upstream_response_time`
-- `nginx/conf.d/justdoit.conf:33` — gzip 配置，故意不含 `text/event-stream`
-- `nginx/conf.d/justdoit.conf:61` — `resolver 127.0.0.11 valid=10s`，解决容器 IP 变化导致的 502
-- `nginx/conf.d/justdoit.conf:66` — 80 端口 server 块
-- `nginx/conf.d/justdoit.conf:85` — 443 端口 server 块，TLS 1.2/1.3、会话复用、HSTS 留注释
-- `nginx/conf.d/locations.inc:14` — `set $backend_origin`，配合变量式 `proxy_pass` 触发每次 DNS 解析
-- `nginx/conf.d/locations.inc:19` — `/api/health` 关闭 access_log，避免探针淹掉真实请求
-- `nginx/conf.d/locations.inc:35` — `/api/chat` 关闭 buffering、放大超时、清 Connection 头
-- `nginx/conf.d/locations.inc:63` — 未知路径直接 404，不转发给后端
-- `nginx/conf.d/proxy_headers.inc:13` — 真实 IP / 协议 / Host 透传
-- `nginx/conf.d/proxy_headers.inc:24` — `X-Request-ID` 传给后端，与 `app/core/middleware.py:26` 的校验逻辑对接，实现 Nginx 日志与应用日志同 ID
-- `docker-compose.yml:27` — nginx 服务，仅它映射 80/443
-- `docker-compose.yml:55` — backend 从 `ports` 改为 `expose`，退回内网
-- `docker-compose.yml:133` — adminer 绑定 `127.0.0.1:8080`，只能走 SSH 隧道
-- `docker-compose.override.yml:16` — 本地开发把 8000 放回宿主机，方便直连调试
-- `app/api/chat.py:41` — 后端返回 `X-Accel-Buffering: no`
-- `.gitignore:21` — 证书和私钥不进版本库
 
 ## 线上验证结果
 

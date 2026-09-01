@@ -17,7 +17,7 @@ API 测试       完整 HTTP 请求/响应        验证对外契约
 E2E 测试       前后端完整链路             慢、只覆盖关键路径
 ```
 
-本项目以集成测试和 API 测试为主：HTTP 请求经过 Router、Schema、Service、Repository，再进入 SQLite 内存库。数据库没有 mock，只把真实数据库实现替换成轻量数据库；第三方大模型网络调用则用 monkeypatch 替换，因为它慢、收费且结果不稳定。
+实际工程通常以集成测试和 API 测试为主：HTTP 请求经过 Router、Schema、Service、Repository，再进入 SQLite 内存库。数据库没有 mock，只把真实数据库实现替换成轻量数据库；第三方大模型网络调用则用 monkeypatch 替换，因为它慢、收费且结果不稳定。
 
 ### 测试隔离
 
@@ -37,7 +37,7 @@ FastAPI 依赖覆盖
 
 覆盖率回答的是：代码执行过多少；它不能回答：断言是否有价值、边界是否正确、并发是否安全。
 
-所以本项目使用：
+因此可以使用：
 
 ```text
 pytest-cov 统计覆盖率
@@ -45,7 +45,7 @@ pytest-cov 统计覆盖率
 .coveragerc 排除一次性脚本等不属于请求路径的代码
 ```
 
-当前总体覆盖率为 `92.81%`，但 `services/llm.py` 的部分网络异常分支仍有缺口。门槛设为 80% 是底线，不代表 80% 就足够。
+覆盖率数字只能作为风险信号，仍要重点检查网络异常等关键分支。门槛设为 80% 是底线，不代表 80% 就足够。
 
 ### 架构测试
 
@@ -87,7 +87,7 @@ schemas 不依赖 ORM / Service
 
 **Q：为什么不 mock 数据库？**
 
-mock 会让测试通过却无法证明真实 SQL、唯一约束、事务和字段映射正确。本项目使用 SQLite 内存库执行真实数据库操作，保留了 SQL 执行和约束验证；MySQL 特有语法、索引和锁行为则需要在 CI 中用真实 MySQL 验证。
+mock 会让测试通过却无法证明真实 SQL、唯一约束、事务和字段映射正确。这种方案使用 SQLite 内存库执行真实数据库操作，保留了 SQL 执行和约束验证；MySQL 特有语法、索引和锁行为则需要在 CI 中用真实 MySQL 验证。
 
 **Q：覆盖率达到 100% 是否代表代码质量好？**
 
@@ -104,25 +104,6 @@ mock 会让测试通过却无法证明真实 SQL、唯一约束、事务和字�
 **Q：CI 为什么要把测试作为合入门禁？**
 
 因为人工 review 很难覆盖所有回归场景，而且测试只在本地执行无法保证提交内容和本地环境一致。CI 在干净环境自动执行，测试失败或覆盖率低于底线就阻止合入，把质量要求前置到交付流程中。
-
-## 本项目实战
-
-- `tests/conftest.py:33` — 每个测试使用独立 SQLite 内存库和 `StaticPool`
-- `tests/conftest.py:53` — 使用 `dependency_overrides` 替换生产数据库依赖
-- `tests/test_architecture.py:19` — 使用 `ast` 解析 import，守住分层边界
-- `tests/test_smoke_api.py:10` — 健康检查和剩余只读接口冒烟测试
-- `pytest.ini:1` — 统一测试路径、覆盖率报告和 80% 门禁
-- `.coveragerc:1` — 覆盖率统计范围与排除项
-- `requirements-dev.txt:10` — 锁定 `pytest-cov==6.0.0`
-- `.github/workflows/tests.yml:1` — push / pull request 自动运行测试
-
-当前验证结果：
-
-```text
-104 passed
-TOTAL coverage: 92.81%
-Required test coverage of 80% reached
-```
 
 ## 易错点
 

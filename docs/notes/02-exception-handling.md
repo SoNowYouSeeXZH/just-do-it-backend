@@ -75,9 +75,7 @@ class UsernameTakenError(AppError):
 
 **Q：全局异常处理器解决了什么问题？**
 
-三个。第一，消除重复：原来每个路由都要写 `try/except` + 拼错误响应结构。第二，防遗漏：漏写就变成 FastAPI 默认的 500，前端拿不到有意义的信息。第三，格式统一：以后要给错误响应加 `request_id`，改一处即可。
-
-这个项目重构后 `api/user.py` 里一个 `try/except` 都没有，全靠 `core/handlers.py:29` 的处理器。
+三个。第一，消除重复：原来每个路由都要写 `try/except` + 拼错误响应结构。第二，防遗漏：漏写就变成框架默认的 500，前端拿不到有意义的信息。第三，格式统一：以后要给错误响应加 `request_id`，改一处即可。
 
 **Q：错误响应里应该放什么，不应该放什么？**
 
@@ -96,45 +94,25 @@ class UsernameTakenError(AppError):
 
 **Q：为什么 500 的响应体只有一句「服务异常」？信息太少不影响排查吗？**
 
-不影响，因为排查靠的是日志，不是响应体。`core/handlers.py:47` 里用 `exc_info=True` 把完整堆栈连同请求方法和路径写进日志。用户拿到通用文案，开发者在日志里拿到全部细节——两个受众，两套信息。
+不影响，因为排查靠的是日志，不是响应体。兜底处理器应该用 `exc_info=True` 把完整堆栈连同请求方法和路径写进日志。用户拿到通用文案，开发者在日志里拿到全部细节——两个受众，两套信息。
 
-再往前一步的做法是给每个请求生成 `request_id`，同时放进响应和日志。用户报错时提供这个 id，开发者能直接定位到那一条日志。这是迭代 6 要做的。
+再往前一步的做法是给每个请求生成 `request_id`，同时放进响应和日志。用户报错时提供这个 id，开发者能直接定位到那一条日志。
 
 **Q：`code`（业务码）和 HTTP 状态码为什么要同时存在？**
 
-严格说不必须，HTTP 状态码 + 语义化 `error` 字符串就够了。这个项目保留数字 `code` 是为了兼容前端已有的判断逻辑。
+严格说不必须，HTTP 状态码 + 语义化 `error` 字符串就够了。很多项目保留数字业务码是为了兼容前端已有的判断逻辑。
 
-如果重新设计，我会用 HTTP 状态码表达大类，`error` 字符串表达具体原因，不再要数字业务码——两套数字并存容易让人搞混该看哪个。
+如果重新设计，更推荐用 HTTP 状态码表达大类，`error` 字符串表达具体原因，不再要数字业务码——两套数字并存容易让人搞混该看哪个。
 
 **Q：422 和 400 有什么区别？**
 
-422 是「格式/类型不对」，比如密码字段少于 6 位、该传数字传了字符串——这类由 Pydantic 自动拦下，业务代码根本不会执行。400 是「格式没问题但业务上不允许」，比如「已完成的任务不能再次完成」。
+422 是「格式/类型不对」，比如密码字段少于 6 位、该传数字传了字符串——这类通常由框架的参数校验层自动拦下，业务代码根本不会执行。400 是「格式没问题但业务上不允许」，比如「已完成的任务不能再次完成」。
 
 区分的实际意义：422 说明客户端代码有 bug（该在前端就拦住），400 说明用户操作时序不对。
 
----
-
-## 本项目实战
-
-- `app/core/exceptions.py:22` `AppError` 基类 — `code` + `status_code` 双字段设计
-- `app/core/exceptions.py:40` `InvalidCredentialsError` — 401，且刻意不区分用户不存在/密码错
-- `app/core/exceptions.py:52` `UsernameTakenError` — 409
-- `app/core/exceptions.py:69` `ConfigurationError` — 503，配置缺失时用
-- `app/core/handlers.py:29` 业务异常处理器 — `info` 级别，无堆栈
-- `app/core/handlers.py:43` 兜底处理器 — `error` 级别 + `exc_info=True`，对外只给通用文案
-- `app/main.py:65` `register_exception_handlers(app)` — 挂载点
-
-### 一个例外：401 为什么没走全局处理器
-
-`app/api/deps.py:31` 的 `get_current_user_id` 仍然抛 `HTTPException`，不是遗漏。因为 401 按 HTTP 规范必须带 `WWW-Authenticate: Bearer` 响应头，而 `HTTPException` 支持 `headers` 参数，自定义的 `AppError` 走 JSONResponse 时补这个头更麻烦。
-
-这是一个务实的取舍：`deps.py` 属于 API 层，抛 `HTTPException` 是本层职责范围内的事，不违反分层。
-
----
-
 ## 易错点
 
-**捕获了异常但没回滚事务。** `IntegrityError` 之后不 `session.rollback()`，这个 session 后续所有操作都会失败，报一堆莫名其妙的错。见 `services/user.py:64`。
+**捕获了异常但没回滚事务。** `IntegrityError` 之后不 `session.rollback()`，这个 session 后续所有操作都会失败，报一堆莫名其妙的错。
 
 **把 `except Exception` 写在业务代码里当兜底。** 会把真正的 bug 吞掉变成「服务异常」，日志里什么都没有。兜底只应该在全局处理器里做一次。
 
@@ -142,4 +120,4 @@ class UsernameTakenError(AppError):
 
 **日志级别用错。** 用户密码输错刷 ERROR，真正的故障就被淹没了。
 
-**异常消息里拼接内部信息。** `raise AppError(f"查询失败: {sql}")` 这类写法会把 SQL 泄露到响应里，因为 `message` 是要给用户看的。
+**异常消息里拼接内部信息。** 类似 `f"查询失败: {sql}"` 这类写法会把 SQL 泄露到响应里，因为异常消息最终是要给用户看的。

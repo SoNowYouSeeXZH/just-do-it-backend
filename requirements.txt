@@ -16,20 +16,17 @@ pydantic-settings==2.6.1
 # (通义千问、DeepSeek、Kimi 等都提供),改一下 base_url 就能直接用同一套代码。
 openai==1.99.9
 
-# ===== 数据库(MySQL)=====
+# ===== 数据库(PostgreSQL)=====
 # SQLModel:FastAPI 作者出品,把 Pydantic 和 SQLAlchemy 融合。
 # 好处是"一个类既能当 API 请求校验,又能当数据库表",学习曲线最平。
 # 底层其实就是 SQLAlchemy 2.x,以后想切纯 SQLAlchemy 也几乎无痛。
 sqlmodel==0.0.22
-# PyMySQL:纯 Python 写的 MySQL 驱动,免编译、跨平台。
-# 我们先用同步驱动,代码好读;将来要吞吐再换 asyncmy(异步驱动)。
-PyMySQL==1.1.1
+# psycopg 3:PostgreSQL 官方推荐的 Python 驱动(同步模式)。
+# 与 FastAPI 官方全栈模板同款选型——业务层全是同步 Session,换库不动业务代码。
+# [binary] 附带预编译二进制包,免本地编译。
+psycopg[binary]==3.3.5
 # Alembic:版本化管理数据库结构,生产环境不依赖 create_all() 自动建表
 alembic==1.14.1
-# cryptography:MySQL 8 默认用 caching_sha2_password 认证,
-# PyMySQL 必须借助 cryptography 才能算出加密握手,否则报
-# "'cryptography' package is required for ... auth methods"。
-cryptography==43.0.3
 
 # 密码加盐
 passlib==1.7.4
@@ -51,3 +48,11 @@ python-multipart==0.0.20
 # 所以全局建一个实例复用即可,不要每次请求 new 一个。
 # 4.2 起已内置了原 aioredis 的异步能力,不需要额外装异步库。
 redis==5.2.1
+
+# ===== HTTP 客户端与外部检索(RAG 模块)=====
+# httpx:发送 HTTP 请求(RAG 检索工具抓取攻略页面正文用)。
+# 与测试里 TestClient 底层同源,API 习惯一致。
+httpx==0.28.1
+# ddgs:DuckDuckGo 搜索(原 duckduckgo_search 更名而来),免注册、无 API Key。
+# 是检索工具的默认 Provider。抓取型来源有频控风险,检索结果一律走 Redis 缓存。
+ddgs==9.16.0

@@ -13,3 +13,8 @@ pytest-cov==6.0.0
 # 用它而不是 mock 掉整个缓存模块:mock 只能验证"调用了 set",
 # 无法验证"写进去的值能被正确读回来",而后者才是缓存逻辑的关键。
 fakeredis==2.26.2
+
+# ===== 迁移窗口期临时依赖(数据迁完整体删除)=====
+# PyMySQL:仅 app/migrate_mysql_to_pg.py 读旧 MySQL 源库用。
+# 生产镜像只装 requirements.txt,不包含它;迁移脚本完成后连同这行一起移除。
+PyMySQL==1.1.1

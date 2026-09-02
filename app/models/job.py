@@ -70,7 +70,7 @@ class Question(SQLModel, table=True):
     # 前端 mock 里是 answerIndex(单个 int),升级为数组以同时表达单选/多选。
     answer_indices: list = Field(sa_column=Column(JSON, nullable=False))
 
-    # 解析:答题后展示。TEXT 由 MySQL 兜底,这里给 1024 上限。
+    # 解析:答题后展示。PG 的 TEXT 没有长度上限,这里给 1024 上限是业务约束。
     explanation: str = Field(max_length=1024)
 
     # 溯源:这道题是从哪个页面爬来的,方便核对内容与版权归属。
@@ -78,5 +78,6 @@ class Question(SQLModel, table=True):
     source_url: str | None = Field(default=None, max_length=512)
 
     # 内容指纹:对 prompt(必要时含 job_id)做 hash,用于爬取去重。
-    # unique=True 防止同一道题被重复入库;MySQL 允许多个 NULL,所以手动题留空不冲突。
+    # unique=True 防止同一道题被重复入库;PG/SQLite 的唯一索引同样允许多个 NULL,
+    # 所以手动题留空不冲突。
     content_hash: str | None = Field(default=None, max_length=64, unique=True, index=True)

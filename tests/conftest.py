@@ -2,7 +2,7 @@
 
 这里解决两个测试基础问题:
 
-1. 不连真实 MySQL。测试用 SQLite 内存库,每个测试函数一套全新的表,
+1. 不连真实数据库。测试用 SQLite 内存库,每个测试函数一套全新的表,
    跑完即弃。这样测试快、不污染开发数据、也不需要先启动 docker。
    注意:这是"接口 + 业务"的集成测试,不 mock 数据库读写,
    只是把数据库换成一个更轻的实现。
@@ -63,9 +63,9 @@ def client_fixture(session: Session, monkeypatch: pytest.MonkeyPatch) -> Iterato
 
     app.dependency_overrides[get_session] = get_session_override
 
-    # main.py 的 lifespan 启动时会调用 init_db() 去连真实 MySQL 建表。
+    # main.py 的 lifespan 启动时会调用 init_db() 去连真实数据库建表。
     # 测试里表已经由 session fixture 在 SQLite 上建好了,所以把它替换成空操作。
-    # 这也暴露了当前设计的一个耦合点:应用启动流程硬编码了"连 MySQL 建表"这件事。
+    # 这也暴露了当前设计的一个耦合点:应用启动流程硬编码了"连库建表"这件事。
     # 生产上正确的做法是把建表交给迁移工具(Alembic),启动时不做 DDL。
     monkeypatch.setattr("app.main.init_db", lambda: None)
 

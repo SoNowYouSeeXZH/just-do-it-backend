@@ -79,29 +79,28 @@ class Settings(BaseSettings):
     # token 有效期(分钟),过期后前端需要重新登录。
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 天
 
-    # ===== MySQL 数据库配置 =====
-    # 用 Docker 时 host 是 compose 里的服务名 "mysql";
-    # 本地不走容器直接跑 uvicorn 时,改成 "127.0.0.1" 即可。
-    mysql_host: str = "mysql"
-    mysql_port: int = 3306
-    # 应用连库账号:权限限定在 mysql_database 这一个库(见 docker-compose.yml
-    # 里 mysql 服务的 MYSQL_USER/MYSQL_PASSWORD),不要再用 root 连库。
-    mysql_user: str = ""
-    mysql_password: str = ""  # 必须由 .env 提供,别写死
-    mysql_database: str = "personal_ai"
+    # ===== PostgreSQL 数据库配置 =====
+    # 用 Docker 时 host 由 compose 的 environment 覆盖为服务名 "postgres";
+    # 本地直跑 uvicorn / alembic / 迁移脚本时用 "127.0.0.1"(见 .env)。
+    postgres_host: str = "postgres"
+    postgres_port: int = 5432
+    # compose 的 postgres 服务用这组账号密码初始化超级用户,
+    # 本地单实例下应用直接用它连库;上生产再按最小权限拆分账号。
+    postgres_user: str = "justdoit_app"
+    postgres_password: str = ""  # 必须由 .env 提供,别写死
+    postgres_database: str = "personal_ai"
 
     @property
     def database_url(self) -> str:
         """拼出 SQLAlchemy 需要的连接串。
 
-        格式:mysql+pymysql://用户:密码@主机:端口/库名?charset=utf8mb4
-        - mysql+pymysql 表示 "MySQL 协议 + PyMySQL 驱动"
-        - charset=utf8mb4 保证能存 emoji / 罕见汉字,别偷懒省掉
+        格式:postgresql+psycopg://用户:密码@主机:端口/库名
+        - postgresql+psycopg 表示 "PostgreSQL 协议 + psycopg 3 驱动"
+        - PG 建库默认 UTF-8,不需要 MySQL 时代的 charset=utf8mb4 参数
         """
         return (
-            f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
-            f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_database}"
-            f"?charset=utf8mb4"
+            f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_database}"
         )
 
 

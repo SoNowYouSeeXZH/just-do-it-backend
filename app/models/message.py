@@ -30,8 +30,8 @@ class ChatMessage(SQLModel, table=True):
     # 用 VARCHAR(16) 而不是 ENUM,是因为 ENUM 加字段要改表结构,VARCHAR 灵活。
     role: str = Field(max_length=16, index=True)
 
-    # 内容:用 TEXT(SQLModel 里通过不给 max_length 默认为 TEXT/较长)。
-    # 直接给 str 类型即可,长度上限交给 MySQL 的 TEXT(64KB)兜底。
+    # 内容:用 TEXT(SQLModel 里不给 max_length 默认映射为 TEXT)。
+    # 直接给 str 类型即可,PG 的 TEXT 没有长度上限,不用刻意设 max_length。
     content: str
 
     # 创建时间:默认取当前时间。

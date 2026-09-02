@@ -24,7 +24,7 @@ from app.config import settings
 # create_engine:创建连接池。
 # - echo=False:调试时可以打开,会把每条 SQL 打到日志里,非常适合学习
 # - pool_pre_ping=True:每次从池里拿连接前先 ping 一下,
-#   MySQL 默认 8 小时不活动就断连,加这个能避免"第一条 SQL 报断连"
+#   PG 服务端/NAT 也可能悄悄掐掉长时间空闲的连接,加这个能避免"第一条 SQL 报断连"
 # - pool_recycle=3600:连接用满 1 小时就回收重建,双保险
 engine = create_engine(
     settings.database_url,

@@ -1,23 +1,9 @@
 # docker-compose:用一个文件描述"怎么跑这些容器",之后一条 docker compose up 就能启动。
 # 相比每次敲一长串 docker run 参数,compose 更适合日常开发和部署。
 #
-# ⚠️ 已有数据库的迁移提醒(切换到非 root 应用账号)
-# 下面 mysql 服务的 MYSQL_USER/MYSQL_PASSWORD 只在"数据目录为空的首次初始化"时生效。
-# 如果数据卷里已经有数据(线上环境就是这种情况),这两个变量不会补建账号,
-# 需要手动执行一次下面的 SQL(把 <APP_PASSWORD> 换成 .env 里 MYSQL_PASSWORD 的值):
-#
-#   docker compose exec mysql mysql -uroot -p
-#   CREATE USER IF NOT EXISTS 'justdoit_app'@'%' IDENTIFIED BY '<APP_PASSWORD>';
-#   GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, INDEX, ALTER, REFERENCES
-#     ON personal_ai.* TO 'justdoit_app'@'%';
-#   FLUSH PRIVILEGES;
-#
-# 注意只授到 personal_ai.* 这一个库,且不给 DROP / GRANT OPTION / SUPER。
-# 保留 CREATE/INDEX/ALTER 是因为应用启动时会跑 SQLModel.metadata.create_all 建表。
-# 账号建好后再把 .env 的 MYSQL_USER 从 root 改成 justdoit_app 并重启 backend。
-#
-# ⚠️ 另外:MySQL 官方镜像不接受 MYSQL_USER=root(首次初始化时会直接报错退出)。
-# 所以在删除数据卷重新初始化之前,务必先把 .env 的 MYSQL_USER 改成非 root 值。
+# 数据库是 PostgreSQL 18(pgvector 官方镜像,预装向量扩展)。
+# 扩展的 CREATE EXTENSION 由 Alembic 基线迁移执行,不需要手动进库。
+# MySQL 时代的历史迁移记录见 alembic/legacy_mysql/。
 
 services:
   # ============ 反向代理(Nginx)============
@@ -57,11 +43,11 @@ services:
     # 把 .env 文件里的变量注入到容器里(大模型 Key、数据库密码等)
     env_file:
       - .env
-    # 让 backend 用 compose 内网访问 mysql,用服务名当主机名(不是 localhost!)。
+    # 让 backend 用 compose 内网访问 postgres,用服务名当主机名(不是 localhost!)。
     # 这两个变量优先级高于 .env,写在这里能保证容器间连通。
     environment:
-      MYSQL_HOST: mysql
-      MYSQL_PORT: 3306
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
     # 启动命令沿用 Dockerfile 里的 CMD(不带 --reload),代码固化在镜像里。
     # 本地开发想要"改代码即生效"的热重载,见 docker-compose.override.yml——
     # 那个文件在本机 docker compose up 时会自动叠加,部署时不上传服务器。
@@ -80,7 +66,7 @@ services:
     # Redis 没就绪时应用会自动降级为直接查库,不该因此阻塞启动。
     # 这个区别本身就体现了"哪些依赖是必需的、哪些是可选的"。
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_started
@@ -117,40 +103,29 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # ============ 数据库(MySQL 8.0)============
-  mysql:
-    # 官方镜像,arm64/amd64 都有,Mac 和阿里云都能跑
-    image: mysql:8.0
-    container_name: personal-ai-mysql
-    # 不再向宿主机映射 3306。
-    # 数据库只在 compose 内网可见(backend/adminer 用服务名 "mysql" 访问),
-    # 公网扫描器就打不到它了。本机要用 DBeaver 之类的客户端连库时,
-    # 走 adminer 面板,或临时 docker compose exec mysql mysql -uroot -p。
+  # ============ 数据库(PostgreSQL 18 + pgvector)============
+  # pgvector 官方镜像 = 官方 postgres 镜像 + 预装 pgvector 向量扩展,
+  # 环境变量/端口/卷的用法与官方 postgres 镜像完全一致。
+  # 不向宿主机映射 5432:数据库只在 compose 内网可见(backend/adminer 用服务名
+  # "postgres" 访问),公网扫描器打不到。本地要直连时见 docker-compose.override.yml。
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: personal-ai-postgres
     environment:
-      # 从 .env 读取密码;.env 里必须有 MYSQL_ROOT_PASSWORD 和 MYSQL_DATABASE
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      # 官方镜像首次初始化时会自动创建这个账号,
-      # 并只授予它 MYSQL_DATABASE 这一个库的权限(不含其他库、不含 GRANT 权限)。
-      # backend 用它连库,避免应用层拿着 root 跑——一旦应用被攻破,
-      # 影响范围也只限于这个业务库。
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      # 让 MySQL 默认用 utf8mb4(能存 emoji 和罕见汉字),避免以后踩编码坑
-      LANG: C.UTF-8
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
-      # 学习期/小内存服务器优化:默认 buffer pool 是 128M,这里显式声明,便于以后调整
-      - --innodb-buffer-pool-size=128M
+      # 从 .env 读取;数据卷为空的首次初始化时用这组值创建超级用户和库
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     # 用 named volume 持久化数据,docker compose down 不会丢数据。
+    # 注意:PG 18 官方镜像要求挂 /var/lib/postgresql(18 起数据存放在
+    # 按版本命名的子目录里,方便跨大版本 pg_upgrade),挂老的 .../data 会拒绝启动。
     # 需要清库重来时:docker compose down -v(带 -v 才会连数据卷一起删)
     volumes:
-      - mysql_data:/var/lib/mysql
-    # 健康检查:每 5 秒执行一次 mysqladmin ping,连续成功才算 healthy。
-    # backend 就靠这个信号来判断"MySQL 已经可以接受连接了"。
+      - postgres_data:/var/lib/postgresql
+    # 健康检查:每 5 秒 pg_isready 一次,连续成功才算 healthy。
+    # backend 靠这个信号判断"PG 已经可以接受连接了"。
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -169,17 +144,17 @@ services:
     # 只绑到宿主机 127.0.0.1,外部网卡访问不到,仅供 SSH 隧道使用
     ports:
       - "127.0.0.1:8080:8080"
-    # 打开页面后默认服务器填 mysql(compose 服务名),用户名 root,密码就是 .env 里的那个
+    # 打开页面后默认服务器填 postgres(compose 服务名),账号密码就是 .env 里的 POSTGRES_*
     environment:
-      ADMINER_DEFAULT_SERVER: mysql
+      ADMINER_DEFAULT_SERVER: postgres
     depends_on:
-      - mysql
+      - postgres
     restart: unless-stopped
 
 # ============ 数据卷声明 ============
 # named volume 由 docker 统一管理,位置不用关心,跨平台可移植。
 volumes:
-  mysql_data:
+  postgres_data:
   # Nginx 日志放独立卷,容器重建不丢历史访问日志
   nginx_logs:
   # Redis 开了 appendonly,重启后能恢复缓存(不是必需,但能避免重启后全量穿透)

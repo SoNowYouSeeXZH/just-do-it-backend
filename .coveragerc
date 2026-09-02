@@ -3,6 +3,7 @@ source = app
 omit =
     app/backfill_question_hashes.py
     app/seed.py
+    app/migrate_mysql_to_pg.py
 
 [report]
 exclude_lines =

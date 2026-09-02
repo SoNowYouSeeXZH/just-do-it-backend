@@ -33,7 +33,10 @@ def _imported_modules(path: Path) -> set[str]:
 
 
 def _python_files(layer: str) -> list[Path]:
-    return sorted(p for p in (_APP / layer).glob("*.py") if p.name != "__init__.py")
+    # rglob 递归收集:层下面的子包(如 services/rag/)必须同样被守卫覆盖。
+    # 此前用非递归 glob,子包文件会静默逃过分层检查——守卫测试"仍然通过"
+    # 反而是虚假安全感。
+    return sorted(p for p in (_APP / layer).rglob("*.py") if p.name != "__init__.py")
 
 
 @pytest.mark.parametrize("path", _python_files("services"), ids=lambda p: p.name)

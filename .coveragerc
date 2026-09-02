@@ -4,6 +4,7 @@ omit =
     app/backfill_question_hashes.py
     app/seed.py
     app/migrate_mysql_to_pg.py
+    app/import_question_banks.py
 
 [report]
 exclude_lines =

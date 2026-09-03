@@ -1,6 +1,11 @@
 # 15 索引迁移与企业级变更流程
 
 > 对应迭代 8 · 索引与慢查询分析
+>
+> **本篇示例基于 MySQL 时代。** 项目已于 2026-09 迁到 PostgreSQL（见笔记 16），
+> 文中 `EXPLAIN` 的 type/key/Extra 列、`SET GLOBAL slow_query_log`、gh-ost / pt-osc
+> 都是 MySQL 特有的东西。方法论（先看查询再设计索引、迁移要可审查可回滚）不变，
+> 命令要换。PG 对照见下面的「换到 PostgreSQL 之后」一节。
 
 ## 一句话总结
 
@@ -72,6 +77,34 @@ def downgrade() -> None:
 
 `upgrade` 描述向前升级要做什么，`downgrade` 描述撤销这次变更要做什么。迁移工具通过版本表记录当前数据库版本，执行升级时只运行尚未执行的 revision。
 
+### 写得出 downgrade 不等于回滚安全
+
+索引是数据的冗余副本，`drop_index` 不会丢任何一行业务数据，因此上面这个 revision 的回滚风险只在性能和锁，不在数据。但并非所有变更都这样，按"能否安全 downgrade"可以分三档：
+
+- 可逆：加索引、加可空列、加新表、加默认值。回滚只影响性能或删掉尚无人依赖的对象
+- 有条件可逆：加非空列、重命名列。需要确认回滚时没有代码仍在依赖，重命名通常还要经过双写过渡期
+- 不可逆：缩短字段长度、删列、删表、类型收窄、数据转换与回填。回滚必然损失信息
+
+第三类最容易被 downgrade 的存在骗过去。以扩长字段为例：
+
+```python
+# upgrade: VARCHAR(50) -> VARCHAR(255)
+op.alter_column("tasks", "title", type_=sa.String(255))
+```
+
+升级后一旦写入长度超过 50 的数据，反向执行时严格模式会以 `Data too long for column` 中断，把库留在中间状态；非严格模式则静默截断，数据无声丢失。另外 `VARCHAR` 跨过 255 字节边界时长度前缀由 1 字节变为 2 字节，本身就需要重建表，不属于 instant DDL。
+
+对这类变更，正确做法不是补一个看起来能跑的 downgrade，而是显式挡住：
+
+```python
+def downgrade() -> None:
+    raise NotImplementedError(
+        "缩短 title 长度不可逆，回滚请走备份恢复流程"
+    )
+```
+
+这样 CI 验证 downgrade 时会立即失败，迫使团队在发布前就确认这次变更没有回头路，而不是在生产事故中才发现。
+
 ### 慢查询日志
 
 应用层慢请求日志和数据库慢查询日志解决的是不同问题：
@@ -98,6 +131,17 @@ SET GLOBAL long_query_time = 0.1;
 2. 选择低峰期执行并设置超时、监控和终止方案
 3. 必要时使用 `gh-ost` 或 `pt-online-schema-change` 等在线变更工具
 4. 执行后验证索引、慢查询和接口延迟
+
+### 换到 PostgreSQL 之后
+
+上面四处 MySQL 专有做法在 PG 里的对应物，逐条换：
+
+- **看执行计划**：`EXPLAIN` 换成 `EXPLAIN (ANALYZE, BUFFERS)`。MySQL 看 type/key/rows/Extra 这几列，PG 输出的是计划树，要看的是节点类型（`Seq Scan` / `Index Scan` / `Bitmap Heap Scan`）、`actual time` 与 `rows` 的**估算值 vs 实际值差距**（差得大说明统计信息过期，该 `ANALYZE`），以及 `Buffers` 里的 shared hit/read 比例。注意带 `ANALYZE` 会真的执行语句，写操作要包在事务里回滚。
+- **慢查询日志**：没有 `slow_query_log` 开关，直接设 `log_min_duration_statement = 100`（毫秒，`-1` 关闭、`0` 记全部）。可以 `ALTER SYSTEM SET` 后 `SELECT pg_reload_conf()`，也可以只对某个库或某个用户设。
+- **找出该优化哪条 SQL**：MySQL 靠翻慢日志 + `pt-query-digest`，PG 更好用的是 `pg_stat_statements` 扩展——它按「语句模板」聚合累计耗时、调用次数、平均耗时，直接 `ORDER BY total_exec_time DESC` 就是优化清单，不用先攒日志。
+- **大表加索引**：不需要 gh-ost / pt-osc 这类外部工具，PG 自带 `CREATE INDEX CONCURRENTLY`（`DROP INDEX CONCURRENTLY` 同理）。代价是：不能在事务块里执行（所以 Alembic 迁移里要 `autocommit_block()`）、要扫两遍表因此更慢、失败会留下一个 `INVALID` 的废索引需要手工 drop 后重建。
+
+一个反直觉的差异值得记住：**PG 的加列比 MySQL 更省事**。PG 11 起「加带默认值的非空列」是纯元数据操作，不重写表；而 MySQL 的很多 DDL 仍要重建表，这正是 gh-ost 这类工具存在的原因。所以「大表变更必须上在线 DDL 工具」这条经验是 MySQL 语境下的，换到 PG 要重新判断。
 
 ## 企业级迁移流程
 
@@ -149,6 +193,10 @@ staging 使用接近生产的数据验证
 
 不一定。只有在 downgrade 经过演练且变更可逆时才适合回退。涉及数据删除、数据转换或不可逆操作时，应停止发布并根据备份恢复。代码回滚和数据库回滚必须分别评估。
 
+**Q：字段长度从 50 扩到 255 之后还能回滚吗？**
+
+不能当作可逆变更。升级后只要写入过超过 50 的数据，反向 `alter_column` 在严格模式下会因 `Data too long for column` 失败，在非严格模式下会静默截断并永久丢数据。这类 revision 的 downgrade 应直接抛异常，把回滚路径明确指向备份恢复。加索引这类只影响冗余结构的变更才真正可逆。
+
 **Q：为什么迁移要和应用发布解耦？**
 
 应用代码可以切换到上一版本，但数据库结构变化不一定能安全撤销。解耦后可以先执行向后兼容的迁移，再发布代码，并分别观察和处理两个环节的问题。
@@ -164,6 +212,8 @@ staging 使用接近生产的数据验证
 - 只看迁移命令退出码，不核对最终表结构
 - 把 `stamp` 误认为已经执行了数据库变更
 - 迁移前没有备份，失败后只能依赖未经演练的回滚脚本
+- 因为 revision 里写了 downgrade 就认定这次变更可以安全回滚
+- 给字段长度收窄、删列、数据回填这类不可逆变更补一个"能跑通"的 downgrade
 - 把数据库迁移和应用代码发布绑定成一个不可拆分的操作
 - 用 `docker compose down -v` 作为普通清理命令，误删持久化数据
 - 生产环境开启慢查询日志时没有规划磁盘、保留和脱敏
@@ -175,6 +225,8 @@ staging 使用接近生产的数据验证
 执行计划只是估算，真实数据还要验证
 等值条件靠前，排序字段靠后
 迁移版本化，升级可追踪
+写得出 downgrade，不等于回滚安全
+索引可逆，缩字段删列不可逆
 生产先备份，执行后核对
 小表直接评估，大表在线变更
 代码和数据库分开发布

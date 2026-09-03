@@ -1,3 +1,8 @@
+-- [归档 · MySQL 时代] 历史记录,不是可执行的迁移路径。
+-- 本地已于 2026-09 迁到 PostgreSQL,schema 唯一来源是 alembic/versions/。
+-- 保留原因:线上云节点仍是 MySQL,其结构就是这几份 SQL 手工执行出来的。
+-- 详见 docs/deployment-and-migrations.md 的「schema 的唯一来源」。
+
 -- 迭代 3：创建任务表
 --
 -- 生产执行前先确认 users.id 的实际类型和字符集，并先备份数据库。

@@ -14,7 +14,7 @@
 
 ## 笔记列表
 
-- [01 分层架构与依赖注入](01-layered-architecture.md) — 五层职责边界、DI 的实际价值、如何判断分层是否守住
+- [01 分层架构与依赖注入](01-layered-architecture.md) — 六层职责边界、DI 的实际价值、如何判断分层是否守住
 - [02 异常处理与统一响应](02-exception-handling.md) — 业务异常与 HTTP 解耦、全局处理器、日志与用户提示的分野
 - [03 DTO 与响应白名单](03-dto-and-schema.md) — 为什么不能直接返回 ORM 模型、校验该放哪一层
 - [04 密码存储与 JWT 鉴权](04-auth-jwt.md) — bcrypt、JWT 结构、fail closed、防用户名枚举
@@ -28,8 +28,11 @@
 - [12 Docker、Alembic 与部署](12-docker-alembic-deployment.md) — 镜像分层、数据卷、迁移基线、生产部署顺序
 - [13 Nginx 反向代理与 HTTPS](13-nginx-reverse-proxy-and-https.md) — 为什么要反代、真实 IP 透传、SSE 不缓冲、TLS 配置、容器 DNS 缓存坑
 - [14 Redis 缓存与 Cache-Aside](14-redis-cache.md) — fail open、穿透/击穿/雪崩、失效顺序、SCAN 批量删、缓存该放哪一层
-- [15 索引迁移与企业级变更流程](15-index-migration-and-enterprise-gap.md) — 复合索引设计、迁移完整链路、企业级变更流程、大表加索引的替代方案
+- [15 索引迁移与企业级变更流程](15-index-migration-and-enterprise-gap.md) — 复合索引设计、迁移完整链路、企业级变更流程、大表加索引的替代方案（示例基于 MySQL 时代，PG 对照见文内）
+- [16 MySQL → PostgreSQL 全量迁移实战](16-mysql-to-postgres-migration.md) — 为什么整库切换、Alembic 基线重建、序列重置、detached 对象踩坑、方言判重适配
+- [17 题库重建管道：开源直导 + LLM 有锚点改编](17-question-bank-rebuild-pipeline.md) — LLM 当适配器而非作者、Markdown 状态机解析、批量改编与溯源
 
 ## 待补（随迭代推进）
 
-- 16 后台任务与限流（迭代 8）
+- 18 检索基建与 RAG 管道（Track B）
+- 19 ReAct Agent 循环与工具调用（Track B）

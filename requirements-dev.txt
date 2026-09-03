@@ -15,6 +15,11 @@ pytest-cov==6.0.0
 fakeredis==2.26.2
 
 # ===== 迁移窗口期临时依赖(数据迁完整体删除)=====
-# PyMySQL:仅 app/migrate_mysql_to_pg.py 读旧 MySQL 源库用。
-# 生产镜像只装 requirements.txt,不包含它;迁移脚本完成后连同这行一起移除。
+# 下面两个只被 app/migrate_mysql_to_pg.py 用到。该脚本已于 2026-09 实际执行完毕,
+# 仅作留档;确认不再需要复跑后,连同这一整段一起删除。
+# PyMySQL:读旧 MySQL 源库用。生产镜像只装 requirements.txt,不包含它。
 PyMySQL==1.1.1
+# python-dotenv:迁移脚本直接读 .env 里的 MYSQL_* 变量(Settings 已不再声明它们)。
+# 此前靠 pydantic-settings 的传递依赖侥幸可用——隐式依赖在干净环境会 ImportError,
+# 用到就必须显式声明。
+python-dotenv==1.2.2

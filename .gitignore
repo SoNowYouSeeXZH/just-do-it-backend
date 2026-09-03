@@ -20,3 +20,7 @@ htmlcov/
 # TLS 私钥和证书,只在服务器上生成,绝不进版本库
 nginx/certs/*
 !nginx/certs/.gitkeep
+
+# AI 协作产生的评审/编排记录,每次运行都会新增一份,不进版本库。
+# 需要长期留档的结论请手工整理进 docs/。
+summaries/

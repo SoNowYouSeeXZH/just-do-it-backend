@@ -10,17 +10,20 @@
 
 ## 核心概念
 
-### 五层职责
+### 六层职责
 
 | 层 | 回答什么问题 | 允许依赖 | 禁止出现 |
 |---|---|---|---|
-| Router | 这个 URL 收什么、返什么 | Schema、Service | SQL、业务判断 |
+| Router | 这个 URL 收什么、返什么 | Schema、Service | SQL、Repository、Model、业务判断 |
 | Schema | 输入合法吗、输出暴露哪些字段 | 无 | ORM 模型、业务逻辑 |
-| Service | 业务上算成功还是失败 | Repository、core | `fastapi`、SQL |
+| Service | 业务上算成功还是失败 | Repository、Schema、Model、core | `fastapi`、SQL |
 | Repository | 数据怎么读写 | Model、sqlmodel | 业务判断、HTTPException |
-| Model | 表长什么样 | 无 | 一切 |
+| Model | 表长什么样 | 其他 Model | 一切上层（Service/Repository/Router/core） |
+| core | 任何业务都可能用到的能力（配置、缓存、异常、安全、中间件） | config、core 自身 | 一切业务层 |
 
-依赖方向必须单向向下：`api → services → repositories → models`。反向依赖（Service import Router）就是循环耦合。
+依赖方向必须单向向下：`api → services → repositories → models`，core 作为公共底座横向被各层依赖、但自己不反向依赖任何业务层。反向依赖（Service import Router）就是循环耦合。
+
+> core 里的 `handlers.py` / `middleware.py` 是有意为之的例外：它们本身就是框架适配器，允许 import `fastapi`。禁的是「业务方向」的依赖，不是「框架方向」的。
 
 ### 三条硬性边界
 
@@ -31,6 +34,8 @@ services/ 里出现 "from fastapi"        → 业务层被 HTTP 污染
 services/ 里出现 "select(" 或 SQL      → 越过了数据访问层
 api/ 里出现业务 if 判断                → 业务逻辑泄漏到接口层
 ```
+
+但 grep 只是手工兜底。真正长期有效的是把这些规则写成可执行断言（见 `tests/test_architecture.py`），并且**给守卫自身写反向验证用例**——喂进故意违规的代码，确认它真的会失败。只断言「没有违规」的守卫，全绿有两种解释：真的干净，或者检测器根本抓不到。
 
 ### 依赖注入（DI）
 

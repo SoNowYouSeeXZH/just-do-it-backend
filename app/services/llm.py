@@ -8,6 +8,7 @@
 """
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 from openai import AsyncOpenAI
 
@@ -96,5 +97,56 @@ async def ask_llm_stream(message: str) -> AsyncIterator[str]:
             continue
         delta: str | None = chunk.choices[0].delta.content
         # delta 可能是 None(比如某一帧只带了角色信息或思考内容),空值不往外发。
+        if delta:
+            yield delta
+
+
+# ---------------------------------------------------------------------------
+# 下面两个是给 RAG Agent 用的低层入口。
+#
+# 和上面 ask_llm / ask_llm_stream 的区别:那两个封装了"一问一答"这个场景
+# (自带 SYSTEM_PROMPT、只收一句话)。Agent 需要自己掌控完整的 messages 列表
+# ——它要往里追加 tool_calls 和 observation,还要换成攻略助手的 system prompt。
+# 所以这里暴露的是"把 messages 原样发出去"的薄封装,不做任何内容加工。
+# ---------------------------------------------------------------------------
+
+
+async def complete(
+    messages: list[dict[str, Any]],
+    *,
+    tools: list[dict[str, Any]] | None = None,
+) -> Any:
+    """非流式调用,返回原始的 message 对象(可能带 tool_calls)。
+
+    返回 SDK 原对象而不是抽成自己的类型:Agent 需要把这条 assistant 消息
+    原样塞回 messages 列表里(OpenAI 协议要求 tool_calls 和后续 tool 结果
+    严格配对),自己包一层反而要再拆一遍。
+    """
+    kwargs: dict[str, Any] = {
+        "model": settings.llm_model,
+        "messages": messages,
+    }
+    if tools:
+        kwargs["tools"] = tools
+        # "auto" 而不是强制调工具:是否需要检索应该由模型自己判断。
+        # 闲聊问题被强制走一遍检索,既慢又会答得很怪。
+        kwargs["tool_choice"] = "auto"
+
+    completion = await get_client().chat.completions.create(**kwargs)
+    return completion.choices[0].message
+
+
+async def stream_completion(messages: list[dict[str, Any]]) -> AsyncIterator[str]:
+    """流式调用,逐段 yield 文本。给 Agent 的"综合生成"阶段用。"""
+    stream = await get_client().chat.completions.create(
+        model=settings.llm_model,
+        messages=messages,
+        stream=True,
+    )
+
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta: str | None = chunk.choices[0].delta.content
         if delta:
             yield delta

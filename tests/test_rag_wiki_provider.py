@@ -86,23 +86,54 @@ def test_snippet_tags_are_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_stops_early_once_enough_hits(monkeypatch: pytest.MonkeyPatch) -> None:
-    """够数就不再查后面的站点:每多打一个站就多一次被 WAF 拦的机会。"""
+    """命中即停,不跨站凑数。
+
+    实测踩过的反面案例:问原神的问题,ys 站只返回 2 条,于是继续查 sr
+    (崩坏星穹铁道)把结果补到 5 条,来源列表里混进了另一个游戏的页面——
+    凑够条数反而污染了答案依据。少几条同游戏的结果,好过多几条别的游戏的。
+    """
     visited: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        visited.append(request.url.path)
+        visited.append(str(request.url))
         return httpx.Response(200, json=_search_payload(["A", "B"]))
 
     _patch_transport(monkeypatch, handler)
 
     hits = asyncio.run(
         wp.MediaWikiProvider(base_url="https://w.example.com", sites="ys,sr,zzz").search(
-            "x", 2
+            "x", 5
         )
     )
 
-    assert len(hits) == 2
-    assert len(visited) == 1, "第一个站就够了,不该继续查"
+    assert len(hits) == 2, "只要第一个站有结果就用它的,不去别的游戏站补齐"
+    assert len(visited) == 1
+    assert all("/ys/" in v for v in visited)
+
+
+def test_falls_through_to_next_site_when_first_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """第一个站 0 命中(不是失败)时才继续往下找。"""
+    visited: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        visited.append(str(request.url))
+        if "/ys/" in str(request.url):
+            return httpx.Response(200, json=_search_payload([]))
+        return httpx.Response(200, json=_search_payload(["星穹页面"]))
+
+    _patch_transport(monkeypatch, handler)
+
+    hits = asyncio.run(
+        wp.MediaWikiProvider(base_url="https://w.example.com", sites="ys,sr").search(
+            "x", 5
+        )
+    )
+
+    assert len(hits) == 1
+    assert "星穹页面" in hits[0].title
+    assert len(visited) == 2
 
 
 def test_single_site_failure_does_not_fail_whole_search(

@@ -128,18 +128,21 @@ class MediaWikiProvider:
             # 逐站点顺序查而不是并发:并发对被 WAF 保护的站点等于自己制造
             # 一次小型压测,更容易触发拦截。攻略问答对 1~2 秒的差别不敏感。
             for slug in self._sites:
-                if len(hits) >= max_results:
-                    break
                 try:
-                    hits.extend(
-                        await self._search_site(
-                            client, slug, query, max_results - len(hits)
-                        )
-                    )
+                    site_hits = await self._search_site(client, slug, query, max_results)
                 except SearchError as exc:
                     # 单站失败不该让整次检索失败——另一个站可能就有答案。
                     errors.append(f"{slug}:{exc}")
                     logger.info("wiki 站点检索失败 slug=%s err=%s", slug, exc)
+                    continue
+
+                if site_hits:
+                    # **命中即停,不跨站凑数。** 实测过一个反面案例:问原神的问题,
+                    # ys 站只返回 2 条,于是继续查 sr(崩坏星穹铁道)把结果补到 5 条,
+                    # 结果来源列表里混进了另一个游戏的页面——凑够条数反而污染了答案依据。
+                    # 少几条同游戏的结果,好过多几条别的游戏的结果。
+                    hits = site_hits
+                    break
 
         if not hits and errors:
             # 全都失败才算失败,并把各站原因合并上报(交给模型当 observation)。

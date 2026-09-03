@@ -157,11 +157,14 @@ class SearchProvider(Protocol):
 现有事件不动，新增一种可选事件，旧前端解析逻辑不受影响（未知字段被忽略）：
 
 ```
-data: {"stage": "retrieving", "detail": "正在搜索：塞尔达传说 神庙攻略"}
-data: {"delta": "..."}        # 现有
-data: {"error": "..."}        # 现有
-data: [DONE]                  # 现有
+data: {"stage": "retrieving", "detail": "正在搜索：纳塔"}
+data: {"stage": "answering"}   # 检索结束、开始生成，前端可据此换掉进度提示
+data: {"delta": "..."}         # 现有
+data: {"error": "..."}         # 现有
+data: [DONE]                   # 现有
 ```
+
+**但 `agent.py` 不负责拼这些 `data:` 帧。** 它产出结构化事件（`StageEvent` / `DeltaEvent`），由上层决定序列化成 SSE 还是别的传输形式——传输协议属于接口层。这一条修正了架构评审里 P2-4 指出的问题（SSE 分帧下沉到 services 层，且守卫拦不住，因为是字符串拼接不是 import）。现有 `chat.py` 的分帧代码保持不动，B3 接线时在那里把事件转成帧。
 
 `ChatMessage` 落库不变（user + assistant 两条，来源列表已内嵌在 assistant 文本里），**不加表、不加列**。
 

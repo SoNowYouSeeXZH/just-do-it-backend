@@ -159,3 +159,62 @@ def test_ask_llm_stream_requests_streaming(monkeypatch: pytest.MonkeyPatch) -> N
     asyncio.run(drain())
 
     assert fake.completions.calls[0]["stream"] is True
+
+
+# ---------------------------------------------------------------------------
+# 给 Agent 用的低层入口
+# ---------------------------------------------------------------------------
+
+
+def test_complete_passes_messages_verbatim(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Agent 需要自己掌控完整 messages(要往里追加 tool_calls 和 observation),
+    所以这层不能偷偷改内容——比如不能自作主张插入 SYSTEM_PROMPT。"""
+    fake = _fake_client(_message("回复"))
+    monkeypatch.setattr(llm, "get_client", lambda: fake)
+    messages = [
+        {"role": "system", "content": "自定义人设"},
+        {"role": "user", "content": "问题"},
+    ]
+
+    asyncio.run(llm.complete(messages))
+
+    assert fake.completions.calls[0]["messages"] == messages
+    assert "tools" not in fake.completions.calls[0]
+
+
+def test_complete_with_tools_uses_auto_choice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """tool_choice 必须是 auto 而不是强制调工具。
+
+    闲聊问题被强制走一遍检索,既慢又会答得很怪——是否需要检索该由模型判断。
+    """
+    fake = _fake_client(_message("回复"))
+    monkeypatch.setattr(llm, "get_client", lambda: fake)
+    schemas = [{"type": "function", "function": {"name": "t"}}]
+
+    asyncio.run(llm.complete([{"role": "user", "content": "x"}], tools=schemas))
+
+    call = fake.completions.calls[0]
+    assert call["tools"] == schemas
+    assert call["tool_choice"] == "auto"
+
+
+def test_complete_returns_raw_message_object(monkeypatch: pytest.MonkeyPatch) -> None:
+    """返回 SDK 原对象而不是自己的类型:Agent 要把这条 assistant 消息原样
+    塞回 messages(协议要求 tool_calls 与 tool 结果严格配对)。"""
+    expected = _message("回复")
+    monkeypatch.setattr(llm, "get_client", lambda: _fake_client(expected))
+
+    result = asyncio.run(llm.complete([{"role": "user", "content": "x"}]))
+
+    assert result is expected.choices[0].message
+
+
+def test_stream_completion_yields_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _fake_client(_FakeStream([_chunk("你"), _chunk(None), _chunk("好")]))
+    monkeypatch.setattr(llm, "get_client", lambda: fake)
+
+    async def collect() -> list[str]:
+        return [d async for d in llm.stream_completion([{"role": "user", "content": "x"}])]
+
+    assert asyncio.run(collect()) == ["你", "好"]
+    assert fake.completions.calls[0]["stream"] is True

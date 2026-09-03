@@ -291,3 +291,38 @@ def test_extract_text_keeps_paragraph_breaks() -> None:
 
 def test_extract_text_unescapes_entities() -> None:
     assert "a<b & c" in pf.extract_text("<p>a&lt;b &amp; c</p>")
+
+
+def test_narrow_to_content_prefers_mediawiki_body() -> None:
+    """实测 biligame wiki 页面前 300 字全是导航栏,不收窄就等于喂噪声。"""
+    html = """
+    <div id="nav"><p>首页 导航 角色培养总览 新手教程</p></div>
+    <div class="mw-parser-output"><p>纳塔是提瓦特的国度之一</p></div>
+    <div class="printfooter">本页面最后修订于</div>
+    """
+
+    text = pf.extract_text(html)
+
+    assert "纳塔是提瓦特的国度之一" in text
+    assert "新手教程" not in text
+    assert "最后修订" not in text
+
+
+@pytest.mark.parametrize("tag", ["article", "main"])
+def test_narrow_to_content_falls_back_to_semantic_tags(tag: str) -> None:
+    html = f"<div id='nav'>导航噪声</div><{tag}><p>真正的正文</p></{tag}>"
+
+    text = pf.extract_text(html)
+
+    assert "真正的正文" in text
+    assert "导航噪声" not in text
+
+
+def test_narrow_to_content_keeps_whole_page_when_unrecognized() -> None:
+    """识别不出正文容器时必须原样返回。
+
+    猜错的代价是静默丢掉正文,比多留一些导航噪声严重得多——宁可保守。
+    """
+    html = "<div class='content'><p>没有已知容器标记的正文</p></div>"
+
+    assert "没有已知容器标记的正文" in pf.extract_text(html)

@@ -107,8 +107,14 @@ class Settings(BaseSettings):
     wiki_sites: str = "ys,sr,zzz"
     wiki_search_limit_per_site: int = 5
     wiki_request_timeout_seconds: float = 8.0
-    # biligame 有 WAF,请求密了会返回 567。退避重试一次,间隔别太短。
-    wiki_retry_delay_seconds: float = 1.0
+    # biligame 有 WAF,请求密了会返回 567。实测背靠背两次请求第二次必被拦,
+    # 所以两件事都要做:
+    # (1) 同一进程内对 wiki 的请求之间强制留出最小间隔;
+    # (2) 撞上 567/429/503 时退避重试一次。
+    # 一次攻略问答在 Agent 循环里可能连着发 4~5 个请求(搜索 + 抓页),
+    # 没有节流的话必然被拦——这不是可选优化,是能不能用的问题。
+    wiki_min_interval_seconds: float = 1.5
+    wiki_retry_delay_seconds: float = 2.0
 
     # ----- ddg Provider(备选)-----
     # DDG 的区域参数。cn-zh 让中文攻略站排在前面。

@@ -23,6 +23,19 @@ def _patch_transport(monkeypatch: pytest.MonkeyPatch, handler) -> None:
     monkeypatch.setattr(wp.httpx, "AsyncClient", factory)
 
 
+@pytest.fixture(autouse=True)
+def _no_throttle(monkeypatch: pytest.MonkeyPatch):
+    """默认关掉节流,否则每个用例都要白等 1.5 秒。
+
+    节流本身由 test_throttle_* 专门验证。
+    """
+    monkeypatch.setattr(wp.settings, "wiki_min_interval_seconds", 0.0)
+    monkeypatch.setattr(wp.settings, "wiki_retry_delay_seconds", 0.0)
+    wp.reset_throttle_for_tests()
+    yield
+    wp.reset_throttle_for_tests()
+
+
 def _search_payload(titles: list[str]) -> dict:
     return {
         "query": {
@@ -218,3 +231,63 @@ def test_provider_factory_returns_wiki_by_default() -> None:
         assert isinstance(sp.get_provider(), wp.MediaWikiProvider)
     finally:
         sp.reset_provider_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# 节流
+# ---------------------------------------------------------------------------
+
+
+def test_throttle_spaces_out_consecutive_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """实测背靠背两次请求第二次必被 WAF 拦,所以必须强制留间隔。
+
+    这里不真等 1.5 秒,而是把 sleep 换成记录器——断言"该等多久",
+    比断言墙上时钟更快也更稳。
+    """
+    monkeypatch.setattr(wp.settings, "wiki_min_interval_seconds", 1.5)
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        # 让单调时钟"前进"这么多,模拟真的等过了
+        base = wp.time.monotonic()
+        monkeypatch.setattr(wp.time, "monotonic", lambda: base + seconds)
+
+    monkeypatch.setattr(wp.asyncio, "sleep", fake_sleep)
+    _patch_transport(
+        monkeypatch,
+        lambda request: httpx.Response(200, json=_search_payload(["A"])),
+    )
+
+    async def two_searches() -> None:
+        provider = wp.MediaWikiProvider(base_url="https://w.example.com", sites="ys")
+        await provider.search("x", 1)
+        await provider.search("y", 1)
+
+    asyncio.run(two_searches())
+
+    assert slept, "第二次请求必须先等待,否则会被 WAF 拦"
+    assert slept[-1] <= 1.5
+
+
+def test_throttle_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """间隔配 0 时不该有任何等待——本地调试和单测都需要这个逃生口。"""
+    monkeypatch.setattr(wp.settings, "wiki_min_interval_seconds", 0.0)
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(wp.asyncio, "sleep", fake_sleep)
+    _patch_transport(
+        monkeypatch,
+        lambda request: httpx.Response(200, json=_search_payload(["A"])),
+    )
+
+    asyncio.run(
+        wp.MediaWikiProvider(base_url="https://w.example.com", sites="ys").search("x", 1)
+    )
+
+    assert slept == []

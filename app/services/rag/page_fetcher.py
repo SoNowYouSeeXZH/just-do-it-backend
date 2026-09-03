@@ -139,13 +139,50 @@ _BLOCK_TAGS = re.compile(
 )
 
 
+# 正文容器。抓下来的整页 HTML 里导航栏、侧边栏、页脚占了绝大部分文字,
+# 直接抽全页会得到一堆"首页 导航 角色培养总览 新手教程"这类噪声——
+# 实测 biligame wiki 页面前 300 字全是导航。所以先把范围收窄到正文容器。
+#
+# 顺序即优先级:mw-parser-output 是 MediaWiki 的正文 div(wiki 类站点命中它),
+# 其次是语义化的 <article> / <main>。都找不到才退回整页。
+_CONTENT_CONTAINERS = (
+    re.compile(
+        r'<div[^>]*\bclass="[^"]*\bmw-parser-output\b[^"]*"[^>]*>(?P<body>.*)',
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(r"<article\b[^>]*>(?P<body>.*?)</article>", re.IGNORECASE | re.DOTALL),
+    re.compile(r"<main\b[^>]*>(?P<body>.*?)</main>", re.IGNORECASE | re.DOTALL),
+)
+
+
+def narrow_to_content(html: str) -> str:
+    """把整页 HTML 收窄到正文区域;识别不出来就原样返回。
+
+    刻意不做"猜哪个 div 文字最多"这类启发式:猜错的代价是静默丢掉正文,
+    比多留一些导航噪声严重得多。宁可保守。
+    """
+    for pattern in _CONTENT_CONTAINERS:
+        match = pattern.search(html)
+        if match:
+            body = match.group("body")
+            # mw-parser-output 那条用的是贪婪匹配到结尾(嵌套 div 无法用正则
+            # 正确配对结束标签),所以顺手掐掉页脚常见的收尾标记。
+            for tail in ("<footer", 'id="footer"', 'class="printfooter"'):
+                index = body.find(tail)
+                if index > 0:
+                    body = body[:index]
+            if body.strip():
+                return body
+    return html
+
+
 def extract_text(html: str) -> str:
     """从 HTML 里抽出可读正文。
 
     用正则而不是 BeautifulSoup:少一个依赖,而这里的目标不是"完美还原页面",
-    只是"给模型一段够用的文字"。代价要说清楚——正则抽正文抽不掉导航栏、
-    页脚、广告文案,所以结果里会混入噪声。模型对噪声有一定容忍度,
-    真正影响答案质量时再换成 trafilatura / readability 这类正文抽取库。
+    只是"给模型一段够用的文字"。代价要说清楚——正则抽正文抽不干净导航栏、
+    页脚、广告文案,`narrow_to_content` 只能缓解不能根治。真正影响答案质量时
+    再换成 trafilatura / readability 这类专门的正文抽取库。
 
     顺序很重要:必须先整段删掉 script/style 的**内容**,再删标签。
     反过来先删标签的话,JS 代码会变成正文里的乱码。
@@ -153,6 +190,7 @@ def extract_text(html: str) -> str:
     import html as html_module
 
     text = _SCRIPT_STYLE.sub(" ", html)
+    text = narrow_to_content(text)
     # 块级标签换成换行,否则段落会全部黏成一行,模型很难读
     text = _BLOCK_TAGS.sub("\n", text)
     text = _TAG.sub(" ", text)

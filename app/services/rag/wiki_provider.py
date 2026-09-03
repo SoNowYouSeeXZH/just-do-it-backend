@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from urllib.parse import quote
 
 import httpx
@@ -49,6 +50,50 @@ def _strip_tags(text: str) -> str:
     import html as html_module
 
     return html_module.unescape(_TAG.sub("", text)).strip()
+
+
+# 上一次对 wiki 发请求的时刻(单调时钟)。用来做最小间隔节流。
+#
+# 为什么需要:实测背靠背两次请求,第二次必定被 WAF 拦(567)。而一次攻略问答
+# 在 Agent 循环里可能连着发 4~5 个请求(搜索 + 抓页),不节流就必然被拦。
+# 用 monotonic 而不是 time.time():后者会被系统时间调整影响,可能算出负间隔。
+#
+# 局限说清楚:这是**单进程内**的节流。多 worker 部署时各进程各算一份,
+# 实际速率是 worker 数的倍数。真要严格限速得把状态放 Redis,
+# 当前单实例部署下不值得,但上多副本前必须回来处理。
+_last_request_at: float = 0.0
+_throttle_lock: asyncio.Lock | None = None
+
+
+def _get_lock() -> asyncio.Lock:
+    # 惰性创建:Lock 会绑定创建时所在的事件循环,模块导入期还没有循环。
+    global _throttle_lock
+    if _throttle_lock is None:
+        _throttle_lock = asyncio.Lock()
+    return _throttle_lock
+
+
+async def _throttle() -> None:
+    """确保两次 wiki 请求之间至少隔 wiki_min_interval_seconds。"""
+    global _last_request_at
+
+    interval = settings.wiki_min_interval_seconds
+    if interval <= 0:
+        return
+
+    # 加锁是必须的:并发请求同时读到同一个 _last_request_at,
+    # 各自算出"不用等",然后一起发出去——节流就白做了。
+    async with _get_lock():
+        elapsed = time.monotonic() - _last_request_at
+        if elapsed < interval:
+            await asyncio.sleep(interval - elapsed)
+        _last_request_at = time.monotonic()
+
+
+def reset_throttle_for_tests() -> None:
+    global _last_request_at, _throttle_lock
+    _last_request_at = 0.0
+    _throttle_lock = None
 
 
 class MediaWikiProvider:
@@ -150,6 +195,7 @@ class MediaWikiProvider:
         last: str = ""
 
         for attempt in range(2):
+            await _throttle()
             try:
                 response = await client.get(url, params=params)
             except httpx.HTTPError as exc:

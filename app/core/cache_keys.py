@@ -48,3 +48,22 @@ def job_question_titles(job_id: str) -> str:
 def industry_detail(industry_id: str) -> str:
     """单个行业详情的 key。"""
     return f"jd:industries:detail:{industry_id}"
+
+
+# RAG 检索相关缓存前缀。
+RAG_PREFIX = "jd:rag:"
+
+
+def rag_search(query_fingerprint: str) -> str:
+    """一次搜索查询的结果缓存 key。
+
+    传进来的是**归一化后再哈希**的查询指纹,不是原始 query,原因有三:
+    - 原始 query 是用户输入,可能带冒号——而冒号是 Redis key 的层级分隔符,
+      直接拼进去会把 key 的树状结构搞乱
+    - 长度不可控,哈希后定长
+    - 顺带避免把用户原文明文存进 Redis 的 key 名里
+
+    注意这里只缓存搜索结果,不缓存 LLM 回答:回答依赖完整对话上下文,
+    同样一句话在不同上下文里该给出不同答案,缓存它会答错。
+    """
+    return f"jd:rag:search:{query_fingerprint}"

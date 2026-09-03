@@ -25,10 +25,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 import json
 import logging
 import random
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 import redis
 
@@ -215,6 +216,34 @@ def cache_aside(
         return cached  # type: ignore[return-value]
 
     fresh = loader()
+    set_value(key, fresh, ttl=ttl)
+    return fresh
+
+
+async def cache_aside_async(
+    key: str,
+    loader: Callable[[], Awaitable[T]],
+    *,
+    ttl: int | None = None,
+) -> T:
+    """`cache_aside` 的异步版本,给 loader 是协程的场景用(如外部检索)。
+
+    为什么要单独一个函数而不是让 cache_aside 兼容两种 loader:
+    `await` 只能出现在 async 函数里,而 async 函数的返回值是协程——
+    同步调用方拿到的就不是数据了。Python 里同步/异步无法在一个函数里
+    透明兼容(所谓 "colored functions" 问题),分成两个函数最诚实。
+
+    Redis 读写本身仍走同步客户端(redis-py)。这些是毫秒级的本机/内网操作,
+    且已有 0.5s 超时兜底,为它再引入一套异步客户端不划算——项目里
+    数据库访问同样是同步 Session,风格一致。
+    """
+    cached = get(key)
+    if cached is CachedNull:
+        return None  # type: ignore[return-value]
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+
+    fresh = await loader()
     set_value(key, fresh, ttl=ttl)
     return fresh
 

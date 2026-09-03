@@ -71,6 +71,63 @@ class Settings(BaseSettings):
     # 题库批量写入接口的入站鉴权 Key,与大模型出站 Key 分开管理
     admin_api_key: str = ""
 
+    # ===== RAG / Agent 配置 =====
+    # rag_enabled 既是功能开关也是回滚开关:置 False 时「问问AI」走原来的
+    # 直连 LLM 路径,不做任何检索。出问题时改一个环境变量就能退回去,
+    # 不需要回滚代码——这比"改代码删功能"安全得多,也是 A/B 对比的入口。
+    rag_enabled: bool = True
+    # 检索循环的硬上限。模型可能反复调工具却始终不给结论,
+    # 没有上限就是一个会烧钱、会卡住请求的死循环。
+    rag_max_iterations: int = 4
+    rag_search_max_results: int = 5
+    # 抓回来的正文截断长度。不截断的话一个长攻略页就能顶满上下文窗口,
+    # 后面的检索结果反而被挤掉。
+    rag_fetch_max_chars: int = 8000
+    # 抓单个页面的超时(秒)。宁可这一步失败让模型换个来源,
+    # 也不要让用户对着转圈等一个卡死的外部站点。
+    rag_fetch_timeout_seconds: float = 10.0
+    # 检索结果缓存时长。攻略类问题短时间内重复问的概率高,
+    # 而搜索是抓取型来源、有频控风险,缓存既省时间也是护栏。
+    rag_query_cache_ttl_seconds: int = 600
+    # 搜索 Provider:
+    # - "wiki"(默认):MediaWiki API 检索游戏 wiki。见 rag/wiki_provider.py
+    #   开头那段说明——DDG 实测在当前网络下会被限流且不恢复,不能当主路径。
+    # - "ddg":通用网页搜索,保留为备选实现。
+    # 换 Provider 只改这一行,agent 和 tools 零改动(SearchProvider Protocol 的用处)。
+    search_provider: str = "wiki"
+    search_api_key: str = ""  # 仅 key 型 Provider 使用,DDG / wiki 都留空
+
+    # ----- wiki Provider -----
+    # 任何 MediaWiki 站群都行,换站只改 base_url + sites。
+    wiki_base_url: str = "https://wiki.biligame.com"
+    # 站点白名单,逗号分隔,一个 slug 对应一个游戏 wiki。
+    # 实测可达:ys(原神)、sr(星穹铁道)、zzz(绝区零)。
+    # 刻意做成白名单而不是"全网搜":宁可"没配的游戏答不了",
+    # 也不要"什么都能搜但一半时间失败"——后者更难排查、体验更差。
+    wiki_sites: str = "ys,sr,zzz"
+    wiki_search_limit_per_site: int = 5
+    wiki_request_timeout_seconds: float = 8.0
+    # biligame 有 WAF,请求密了会返回 567。退避重试一次,间隔别太短。
+    wiki_retry_delay_seconds: float = 1.0
+
+    # ----- ddg Provider(备选)-----
+    # DDG 的区域参数。cn-zh 让中文攻略站排在前面。
+    search_region: str = "cn-zh"
+    # ddgs 的后端引擎,逗号分隔。
+    #
+    # **不要用默认的 "auto"**,也不要把多个引擎写在一起。实测原因:
+    # auto 会打乱顺序全试一遍,一次搜索耗 30~50 秒;而 ddgs 内部用
+    # `return_when=FIRST_EXCEPTION` 并发批量跑,一个秒失败的引擎会把
+    # 另一个正在返回结果的引擎一起带走——多后端不是冗余,是互相拖累。
+    #
+    # 实测(开发网络):brave 约 1.7~6.7s 可用但很快被限流;
+    # duckduckgo、startpage 秒失败;google、mojeek、bing 超时。
+    search_backends: str = "brave"
+    # 单个后端引擎的 HTTP 超时。设小值让不可达的引擎快速失败。
+    search_request_timeout_seconds: float = 8.0
+    # 一次搜索的总预算。
+    search_timeout_seconds: float = 20.0
+
     # ===== 登录鉴权(JWT)相关配置 =====
     # 签发/校验 token 用的密钥,务必通过环境变量传入随机高强度字符串,不要写死。
     jwt_secret_key: str = ""

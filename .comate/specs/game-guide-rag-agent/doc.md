@@ -135,9 +135,22 @@ class SearchProvider(Protocol):
     async def search(self, query: str, max_results: int) -> list[SearchHit]: ...
 ```
 
-一期实现 `DDGProvider`——基于 `ddgs` 包（原 duckduckgo_search 更名而来），免注册、无 API Key、无调用费用。Provider 抽象保留意义：DDG 是抓取型来源，存在频控与区域可达性风险（本地需能直连 DDG，或走标准 `HTTP(S)_PROXY` 环境变量；后续上云若不可达），届时配置一行换 key 型 Provider（Tavily / 博查），agent/tools 零改动。Redis 检索缓存（见下）天然降低调用频率，是抓取型来源的天然护栏。
+一期原计划只实现 `DDGProvider`——基于 `ddgs` 包（原 duckduckgo_search 更名而来），免注册、无 API Key。**实测后改了主实现**，理由记在下面，因为这是本设计里唯一被现实推翻的决策：
 
-`page_fetcher.py` 基础防护：仅 http/https、禁私网地址段、限制重定向次数、响应体大小上限、总超时（默认 10s/工具）。
+- DDG 在开发网络下不可用：头一两次请求成功（1.7~6.7s），之后被限流且不恢复，连续 5 次只成功 2 次
+- 多后端并列反而更糟：`ddgs` 内部用 `return_when=FIRST_EXCEPTION` 并发批量跑，一个秒失败的后端会把另一个正在返回结果的后端一起带走——多后端不是冗余，是互相拖累
+- 用户明确不接受注册第三方搜索服务，所以 Tavily / 博查这条路排除
+
+**改为 `MediaWikiProvider` 作默认实现**（`app/services/rag/wiki_provider.py`）：游戏攻略天然沉淀在 wiki 上，而 wiki 提供的是正规 API 而不是被爬的网页——结构化、有稳定的页面 URL（利于引用溯源）、免注册。默认站点白名单 `wiki_sites = "ys,sr,zzz"`（biligame 游戏 wiki，实测 0.4~1.6s 可用）。
+
+`DDGProvider` **保留**为备选实现，通过 `settings.search_provider` 在 `"wiki"` / `"ddg"` 间切换——这正是当初抽 Protocol 的用处兑现：换数据源，agent 和 tools 零改动。
+
+已知限制，不藏着：
+- 站点是白名单式的，问到没配的游戏就检索不到。这是刻意取舍——比「什么都搜但一半时间失败」更可预期
+- biligame 有 WAF，请求密了返回 **567**。已做退避重试一次 + 单站失败不影响其他站；Redis 检索缓存是主要护栏
+- MediaWiki 的 `srsearch` 对多词查询偏 AND，「纳塔 火神」可能 0 命中而「纳塔」有结果。这依赖 Agent 换关键词重试（B2 的 observation 机制），不在 Provider 里做查询改写
+
+`page_fetcher.py` 的 SSRF 防护是四道而不是「基础防护」，因为它的 URL 参数最终来自模型输出：① 协议白名单（仅 http/https）② 目标 IP 校验（禁私网/回环/链路本地，且必须校验 `getaddrinfo` 返回的**全部** IP）③ 重定向**逐跳**校验（公网域名 302 到 127.0.0.1 是最经典的绕过，所以不能用 `follow_redirects=True`）④ 内容类型 + 体积（2MB）+ 超时（10s）上限。残留风险已记录：DNS rebinding（检查时与使用时解析结果不同）未处理。
 
 ### SSE 协议扩展（向后兼容）
 
@@ -154,18 +167,37 @@ data: [DONE]                  # 现有
 
 ### 检索缓存
 
-复用 `core/cache.py` 的 `cache_aside`：key `jd:rag:search:<sha1(归一化query)>`，TTL 默认 600s。同一攻略问题短时间内重复问，搜索 API 只打一次（LLM 调用不缓存——上下文相关）。缓存 fail-open 语义沿用现有实现，Redis 挂了只是慢一点。
+复用 `core/cache.py`:key `jd:rag:search:<sha1(归一化query)>:<条数>`，TTL 默认 600s。同一攻略问题短时间内重复问，搜索 API 只打一次（LLM 调用不缓存——上下文相关）。缓存 fail-open 语义沿用现有实现，Redis 挂了只是慢一点。
+
+实现上多了一个 `cache_aside_async`：原有的 `cache_aside` 的 loader 是同步 callable，而检索是协程。Python 里同步/异步无法在一个函数里透明兼容（colored functions），所以分成两个函数，Redis 读写仍走同步客户端（毫秒级操作 + 已有 0.5s 超时兜底，为它引入一套异步客户端不划算，且与项目里同步 Session 的风格一致）。
+
+key 里带条数是必要的：要 3 条和要 10 条不能共用缓存，否则第二次只能拿到 3 条。
 
 ### 配置项（config.py 新增）
 
 ```
-rag_enabled: bool = True              # Agent 管线开关（False 回退直连 LLM）
-rag_max_iterations: int = 4           # 检索循环上限
+rag_enabled: bool = True                     # Agent 管线开关（False 回退直连 LLM，也是回滚开关）
+rag_max_iterations: int = 4                  # 检索循环上限
 rag_search_max_results: int = 5
 rag_fetch_max_chars: int = 8000
+rag_fetch_timeout_seconds: float = 10.0
 rag_query_cache_ttl_seconds: int = 600
-search_provider: str = "ddg"          # 一期 DDG 免注册；后续可换 key 型 Provider
-search_api_key: str = ""              # 仅 key 型 Provider 使用，DDG 留空
+
+search_provider: str = "wiki"                # "wiki"（默认）| "ddg"（备选）
+search_api_key: str = ""                     # 仅 key 型 Provider 使用，wiki/ddg 都留空
+
+# wiki Provider
+wiki_base_url: str = "https://wiki.biligame.com"
+wiki_sites: str = "ys,sr,zzz"                # 站点白名单，一个 slug 一个游戏
+wiki_search_limit_per_site: int = 5
+wiki_request_timeout_seconds: float = 8.0
+wiki_retry_delay_seconds: float = 1.0        # 遇 429/503/567 退避重试一次
+
+# ddg Provider（备选）
+search_region: str = "cn-zh"
+search_backends: str = "brave"                # 不要用 "auto"，也不要并列多个，见上文实测
+search_request_timeout_seconds: float = 8.0
+search_timeout_seconds: float = 20.0
 ```
 
 ## Track C：题库收敛与开源导入

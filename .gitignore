@@ -24,3 +24,7 @@ nginx/certs/*
 # AI 协作产生的评审/编排记录,每次运行都会新增一份,不进版本库。
 # 需要长期留档的结论请手工整理进 docs/。
 summaries/
+
+# 数据库备份。含真实用户数据,绝不进版本库。
+# 备份方法见 docs/deployment-and-migrations.md 的「备份与恢复」。
+backups/

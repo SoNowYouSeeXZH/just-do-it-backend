@@ -2,8 +2,8 @@
 
 ## 当前部署结构
 
-> **注意本地与线上现在不是同一套存储。** 2026-09 完成了 MySQL → PostgreSQL 全量迁移，
-> 但只在本地执行并对账；云节点（139.155.96.143）仍在跑迁移前的 MySQL 版本，尚未重新部署。
+> **注意本地与线上现在不是同一套存储。** 2026-09 存储切到 PostgreSQL 18 + pgvector，
+> 但只在本地执行并验证；云节点（139.155.96.143）仍在跑切换前的旧版本，尚未重新部署。
 > 下面先写 compose 定义的目标形态，再单列线上现状，两者不要混着看。
 
 ### compose 定义（本地已验证）
@@ -32,10 +32,10 @@ backend 容器: uvicorn app.main:app
 
 ### 线上现状（待重新部署）
 
-云节点仍是迁移前的形态：backend + MySQL 8.0 容器 + `mysql_data` 卷，**没有 redis，也没有 postgres**。
+云节点仍是旧形态：backend + 旧的 MySQL 8.0 容器，**没有 redis，也没有 postgres**。
 所以线上的缓存层是空转的（`app/core/cache.py` 是 fail-open 设计，连不上 Redis 不报错、直接回落到查库），这一点在看线上性能数据时要记得。
 
-重新部署到线上的顺序见文末「已知待办」的第一条，它是一次带数据迁移的部署，不能当普通发版做。
+**线上那套数据已确认不需要保留**（产品转型为游戏攻略/社区，旧的职业规划数据全部作废，也没有真实用户）。所以后续重新部署是一次**全新部署**，不是数据迁移：在独立部署窗口审批旧栈清理后，按 compose 起 postgres + redis + backend、`alembic upgrade head` 建表、跑 seed 和题库导入。顺序见文末「已知待办」第一条；本次代码库收敛不连接或修改云节点，也不删除任何数据卷。
 
 ## Nginx 反向代理
 
@@ -141,22 +141,13 @@ alembic/env.py              读取 settings.database_url、加载 SQLModel metad
 alembic/script.py.mako      新 revision 模板
 alembic/versions/cf50d924c9f7_postgres_baseline_full_schema_from_.py
                             PostgreSQL 全量基线（down_revision=None，唯一根节点）
-alembic/legacy_mysql/       MySQL 时代的旧 revision，已下线归档
 ```
 
-`alembic/legacy_mysql/` 里的文件**不要挪回 `versions/`**。它们的 `down_revision` 链和新基线互不相接，一旦被 Alembic 扫到就是两个 head，`upgrade head` 会直接报 `Multiple head revisions are present`。归档原因写在该目录的 README.md 里。
+MySQL 时代的旧 revision（`alembic/legacy_mysql/`）和手写 SQL（`docs/migrations/*.sql`）已于 2026-09 全部删除 —— 线上那套数据确认不再保留，它们既不是可执行路径也不再解释任何现存环境。需要回查时用 git 历史。
 
 ### schema 的唯一来源
 
-**Alembic 是唯一的 schema 变更来源。** `docs/migrations/*.sql` 那三份手写 MySQL SQL 是历史记录，不是可执行的迁移路径：
-
-```text
-docs/migrations/001_tasks.sql                  迭代 3，已应用到线上 MySQL
-docs/migrations/001_add_chat_message_owner.sql 迭代 2，已应用到线上 MySQL
-docs/migrations/002_task_operation_records.sql 迭代 4，已应用到线上 MySQL
-```
-
-保留它们的唯一理由是：**线上那台库现在的结构就是这几份 SQL 手工执行出来的**，在云节点迁到 PG 之前，它们是解释线上现状的凭据。等线上迁完就可以删。新的结构变更一律走 `alembic revision --autogenerate` + 人工 review，不要再往这个目录里加文件。
+**Alembic 是唯一的 schema 变更来源。** `cf50d924c9f7` 是全量建表基线，新环境从零 `alembic upgrade head` 即可。结构变更一律走 `alembic revision --autogenerate` + 人工 review，不要再手写 SQL 文件。
 
 执行常用命令：
 
@@ -252,16 +243,16 @@ cat backup-xxx.dump | sudo docker exec -i personal-ai-postgres \
 两个容易忽略的点：
 
 - **`pg_dump` 不备份角色和全局对象**（用户、权限）。单库单用户的场景够用，多库要配 `pg_dumpall --globals-only`。
-- **恢复后必须检查序列**。用 `pg_restore` 恢复通常会带上序列状态，但如果是手工 `INSERT` 显式 id 导入数据，序列不会自动前进，下次插入就撞主键。修法是 `setval(pg_get_serial_sequence('表名','id'), GREATEST(MAX(id),0)+1, false)`，`app/migrate_mysql_to_pg.py` 里的 `_reset_sequences()` 就是干这个的。
+- **恢复后必须检查序列**。用 `pg_restore` 恢复通常会带上序列状态，但如果是手工 `INSERT` 显式 id 导入数据，序列不会自动前进，下次插入就撞主键。修法是 `setval(pg_get_serial_sequence('表名','id'), GREATEST(MAX(id),0)+1, false)`。
 
 ## 已知待办
 
-- **线上重新部署到 PostgreSQL**：云节点仍是 MySQL 版本。这是一次带数据迁移的部署，顺序应为：备份线上 MySQL → 起 postgres + redis → 跑 `alembic upgrade head` → 用 `app/migrate_mysql_to_pg.py` 搬数据并对账 → 切 backend 镜像 → 观察后再删旧 mysql 卷。**旧卷的删除放在最后且要单独确认，`docker volume rm` 不可逆。**
+- **线上全新部署到 PostgreSQL**：云节点仍是旧的 MySQL 版本，但**那套数据已确认不保留**，所以这是全新部署而不是迁移。该工作不属于本次代码交付，必须安排独立的未来部署窗口：先审批并再次确认无需保留数据，再停止旧栈并执行不可逆的旧卷清理；随后 rsync 新代码，起 postgres + redis，执行 `alembic upgrade head`、`python -m app.seed` 和 `python -m app.import_question_banks`，最后启动 backend + nginx。本次未执行其中任何线上或清卷操作。
 - **正式 TLS 证书**：需域名 + ICP 备案，之后接入 Let's Encrypt 并启用 HSTS。
 - **日志轮转**：Nginx 日志写入 `nginx_logs` 卷，目前无 logrotate，长期运行需配置。
 - **安全组清理**：8000 端口的放行规则已失效（后端改用 expose），建议在云控制台删除，避免误改 compose 后后端重新暴露。
 
 ### 已闭环（原待办，留档）
 
-- ~~**完整 initial migration**~~：2026-09 随 PG 迁移完成，`cf50d924c9f7` 即全量基线，新环境可从零 `upgrade head`。
-- ~~**chat_messages.user_id 第二阶段**~~：PG 基线里该列直接是 `NOT NULL`。迁移时源库有 11 条早于鉴权改造的匿名消息，**按"不伪造归属"原则跳过**而非硬塞一个 user_id，理由记在 `docs/notes/16-mysql-to-postgres-migration.md`。
+- ~~**完整 initial migration**~~：2026-09 随存储切换完成，`cf50d924c9f7` 即全量基线，新环境可从零 `upgrade head`。
+- ~~**chat_messages.user_id 第二阶段**~~：PG 基线里该列直接是 `NOT NULL`。本地迁移时源库有 11 条早于鉴权改造的匿名消息，**按"不伪造归属"原则跳过**而非硬塞一个 user_id，理由记在 `docs/notes/16-mysql-to-postgres-migration.md`。

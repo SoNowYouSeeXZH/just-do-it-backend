@@ -56,6 +56,10 @@ def test_chat_messages_are_owned_by_authenticated_user(
     async def fake_ask(message: str) -> str:
         return "回复"
 
+    # rag_enabled 默认为 True 时,/api/chat 走 RAG Agent,上面这个 fake 会被绕过,
+    # 测试就会真的去请求外部大模型(网络可达时返回 502,不可达时慢且不稳)。
+    # 这条用例验证的是「消息归属」,与检索无关,所以显式关掉 RAG 走旧直连路径。
+    monkeypatch.setattr("app.services.chat.settings.rag_enabled", False)
     monkeypatch.setattr("app.services.chat.ask_llm", fake_ask)
     response = client.post(
         "/api/chat",

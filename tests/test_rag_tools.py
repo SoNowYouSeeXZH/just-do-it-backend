@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from app.core.exceptions import ConfigurationError
 from app.services import llm
 from app.services.rag import agent, tools
 
@@ -203,3 +204,96 @@ def test_observation_is_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "已截断" in result.text
     assert len(result.text) < 9000
     assert result.fetched_url == "https://e.com/a"
+
+
+# ===== 本地语料检索工具 =====
+#
+# 这些用例都把嵌入和数据库替换成假实现:真实现依赖计费的嵌入 API 和 PG
+# 向量算符,都不适合进单测。这里验证的是"工具契约"——参数处理、
+# 来源标记、依赖不可用时的降级。
+
+
+def _fake_corpus(monkeypatch: pytest.MonkeyPatch, rows: list[tuple[str, str, str]]):
+    """替换掉 _run_corpus_search 里延迟导入的两个依赖。"""
+
+    async def fake_embed(texts: list[str]) -> list[list[float]]:
+        return [[0.1] * 4 for _ in texts]
+
+    captured: dict = {}
+
+    def fake_search(session, *, query_embedding, game_slug=None, top_k=5):
+        captured["game_slug"] = game_slug
+        captured["top_k"] = top_k
+
+        class Row:
+            def __init__(self, title: str, url: str, text: str) -> None:
+                self.title = title
+                self.source_url = url
+                self.chunk_text = text
+
+        return [Row(*row) for row in rows]
+
+    monkeypatch.setattr("app.services.embedding.embed_texts", fake_embed)
+    monkeypatch.setattr(
+        "app.repositories.guide_chunk.search_similar", fake_search
+    )
+    return captured
+
+
+def test_corpus_search_marks_chunks_as_fetched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """语料块的正文真的进了上下文,所以按「抓过」计——来源排序才准。"""
+    _fake_corpus(
+        monkeypatch,
+        [("纳塔", "https://w/ys/纳塔", "纳塔是提瓦特的火之国。")],
+    )
+
+    result = asyncio.run(
+        tools.execute("search_local_corpus", '{"query": "纳塔在哪"}')
+    )
+
+    assert result.candidates == [("纳塔", "https://w/ys/纳塔")]
+    assert result.fetched_urls == ["https://w/ys/纳塔"]
+    assert "纳塔是提瓦特的火之国" in result.text
+
+
+def test_corpus_search_passes_game_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _fake_corpus(monkeypatch, [("刻晴", "https://w/ys/刻晴", "雷元素")])
+
+    asyncio.run(
+        tools.execute("search_local_corpus", '{"query": "刻晴", "game_slug": "ys"}')
+    )
+
+    assert captured["game_slug"] == "ys"
+
+
+def test_corpus_search_empty_suggests_online_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """语料是快照,没覆盖到很正常;必须把模型引导到在线检索,而不是让它放弃。"""
+    _fake_corpus(monkeypatch, [])
+
+    result = asyncio.run(tools.execute("search_local_corpus", '{"query": "冷门内容"}'))
+
+    assert "search_guides" in result.text
+
+
+def test_corpus_search_missing_query_is_actionable() -> None:
+    result = asyncio.run(tools.execute("search_local_corpus", "{}"))
+
+    assert "query" in result.text
+
+
+def test_corpus_search_degrades_when_embedding_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """没配嵌入 Key 时语料检索不可用,但不能让整个对话挂掉。"""
+
+    async def no_key(texts: list[str]) -> list[list[float]]:
+        raise ConfigurationError("未配置嵌入模型 API Key，语料向量检索暂不可用")
+
+    monkeypatch.setattr("app.services.embedding.embed_texts", no_key)
+
+    result = asyncio.run(tools.execute("search_local_corpus", '{"query": "纳塔"}'))
+
+    assert "不可用" in result.text
+    assert "其他检索工具" in result.text

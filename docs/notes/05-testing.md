@@ -31,7 +31,7 @@ mock 掉数据库，就测不到这些东西：
 
 换 SQLite 而不是 mock，保留了「真的执行 SQL」这件事，只是换了个轻量引擎。
 
-代价是 SQLite 和 MySQL 有方言差异（JSON 函数、`ON DUPLICATE KEY`、字段长度不强制等）。所以这套方案适合验证业务逻辑，不适合验证 MySQL 特有行为——那类要用真实 MySQL 跑。
+代价是 SQLite 和生产库（本项目是 PostgreSQL）有方言差异（JSON/JSONB 函数、upsert 语法、字段长度不强制等）。所以这套方案适合验证业务逻辑，不适合验证数据库特有行为——那类要用真实 PostgreSQL 跑。
 
 ### SQLite 内存库的两个必要参数
 
@@ -80,7 +80,7 @@ def session_fixture():
 
 **Q：测试该不该连真实数据库？**
 
-看测什么。测业务逻辑用轻量替代（SQLite 内存库）足够，快且隔离好。测数据库特有行为（MySQL 的 JSON 函数、索引效果、锁行为、迁移脚本）必须连真实 MySQL——通常在 CI 里用 Docker 起一个。
+看测什么。测业务逻辑用轻量替代（SQLite 内存库）足够，快且隔离好。测数据库特有行为（PostgreSQL 的 JSONB 函数、索引效果、锁行为、迁移脚本）必须连真实 PostgreSQL——通常在 CI 里用 Docker 起一个。
 
 要避免的是 mock 掉数据库层：那样测试通过了但上线报错，因为 mock 的行为和真实数据库不一致。
 

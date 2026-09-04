@@ -24,7 +24,7 @@
   ↓
 数据访问层 Repository 唯一能出现 SQL 的地方
   ↓
-数据库 MySQL
+数据库 PostgreSQL
 ```
 
 横向贯穿所有层的关注点：

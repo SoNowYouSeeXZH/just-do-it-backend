@@ -27,6 +27,9 @@ sqlmodel==0.0.22
 psycopg[binary]==3.3.5
 # Alembic:版本化管理数据库结构,生产环境不依赖 create_all() 自动建表
 alembic==1.14.1
+# pgvector:PG 向量列的 SQLAlchemy 类型 + python 侧向量序列化。
+# 语料向量检索(guide_chunks 表)依赖它;纯 python,依赖 numpy,无编译步骤。
+pgvector==0.4.2
 
 # 密码加盐
 passlib==1.7.4
@@ -49,15 +52,12 @@ python-multipart==0.0.20
 # 4.2 起已内置了原 aioredis 的异步能力,不需要额外装异步库。
 redis==5.2.1
 
-# ===== HTTP 客户端与外部检索(RAG 模块 · Track B 预置,当前尚无消费者)=====
-# 说明:以下两个依赖是给规划中的 app/services/rag/ 预留的,该子包目前**还未落地**,
-# `grep -r "httpx\|ddgs" app/` 为空。之所以先锁版本而不等到写代码时再加:
-# 版本选型本身是决策(ddgs 由 duckduckgo_search 更名,版本号不连续),先锁住可复现。
-# 若 Track B 长期不开工,应把这一段删掉——生产依赖清单里躺着零消费者的包,
-# 会让「依赖即契约」这件事失去可信度。
-# httpx:发送 HTTP 请求(RAG 检索工具抓取攻略页面正文用)。
-# 与测试里 TestClient 底层同源,API 习惯一致。
+# ===== HTTP 客户端与外部检索(RAG 模块)=====
+# 消费者:app/services/rag/(page_fetcher 抓页、wiki_provider 调 MediaWiki API、
+# search_provider 的 DDG 兜底实现)。
+# httpx:发送 HTTP 请求。与测试里 TestClient 底层同源,API 习惯一致。
 httpx==0.28.1
 # ddgs:DuckDuckGo 搜索(原 duckduckgo_search 更名而来),免注册、无 API Key。
-# 是检索工具的默认 Provider。抓取型来源有频控风险,检索结果一律走 Redis 缓存。
+# 现在是**兜底** Provider(settings.search_provider="ddg"),默认走 MediaWiki——
+# 实测 DDG 连续请求会被限流且不恢复,详见 docs/notes/18-rag-agent-and-retrieval.md。
 ddgs==9.16.0

@@ -124,3 +124,18 @@ class IdempotencyConflictError(AppError):
 
     code = "IDEMPOTENCY_KEY_CONFLICT"
     status_code = 409
+
+
+class ContentRejectedError(AppError):
+    """UGC 内容命中审核规则,拒绝发布。
+
+    用 400 而不是 422:422 表达的是"请求格式不合法",而这里格式完全正确,
+    是内容本身不被接受。前端拿到 CONTENT_REJECTED 应该提示用户修改措辞,
+    而不是当成字段校验错误去标红某个输入框。
+
+    message 刻意不回显命中的具体敏感词:告诉用户"哪个词被拦了"等于
+    把词表逐次泄露出去,攻击者可以据此枚举并绕过。
+    """
+
+    code = "CONTENT_REJECTED"
+    status_code = 400

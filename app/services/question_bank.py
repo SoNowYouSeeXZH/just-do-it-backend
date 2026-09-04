@@ -135,19 +135,21 @@ def _is_unique_violation(exc: IntegrityError, constraint: str) -> bool:
 
     数据库切换到 PostgreSQL 后重写为跨驱动判定,按信号的结构化程度排序:
     1. sqlstate == "23505"(SQL 标准的 unique_violation,psycopg3 提供),
-       再看约束名/表名里是否含目标约束——最可靠,完全不依赖错误文案
-    2. MySQL 错误码 1062(pymysql 放在 args[0],迁移脚本会连 MySQL),约束名出现在文案里
-    3. sqlite3(测试环境)没有结构化信息,只能匹配文案 "UNIQUE constraint failed: ..."
+       再精确核对 diag 中的表名和约束名——最可靠,完全不依赖错误文案
+    2. sqlite3(测试环境)没有结构化信息,只能精确匹配唯一冲突文案
     """
     orig = getattr(exc, "orig", None)
     if getattr(orig, "sqlstate", None) == "23505":
-        names = f"{getattr(orig, 'constraint', '')} {getattr(orig, 'table_name', '')}"
-        return constraint in names
-    args = getattr(orig, "args", ())
-    if args and args[0] == 1062:
-        return constraint in str(orig).lower()
+        diag = getattr(orig, "diag", None)
+        constraint_name = getattr(diag, "constraint_name", None)
+        table_name = getattr(diag, "table_name", None)
+        expected_constraints = {
+            f"ix_questions_{constraint}",
+            f"questions_{constraint}_key",
+        }
+        return table_name == "questions" and constraint_name in expected_constraints
     message = str(orig).lower()
-    return "unique constraint failed" in message and constraint in message
+    return message == f"unique constraint failed: questions.{constraint}".lower()
 
 
 def batch_create_questions(

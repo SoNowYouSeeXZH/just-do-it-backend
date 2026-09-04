@@ -1,9 +1,9 @@
 """jobs / questions 两张表的数据访问封装。
 
 这个文件是本轮重构里最有价值的一处——原来 app/api/jobs.py 的路由里
-混着聚合查询、随机抽样、数据库方言函数(func.rand())。
-方言问题尤其值得隔离:rand() 是 MySQL 的写法,SQLite/PostgreSQL 叫 random()。
-把它关在这一层,以后换库只改这个文件,路由和业务层完全不受影响。
+混着聚合查询、随机抽样、数据库方言函数(硬编码的 func.rand())。
+方言问题尤其值得隔离:把它关在这一层,以后换库只改这个文件,
+路由和业务层完全不受影响。
 """
 
 from sqlalchemy import func
@@ -49,36 +49,35 @@ def count_questions_of_job(session: Session, job_id: str) -> int:
     ).one()
 
 
-def _random_func(session: Session):
-    """返回当前数据库方言对应的随机函数。
+def _random_func():
+    """随机排序用的方言函数。PostgreSQL 与 SQLite(测试库)都叫 RANDOM()。
 
-    MySQL 是 RAND(),SQLite / PostgreSQL 是 RANDOM()。
-    原来代码里硬编码了 func.rand(),导致两个后果:
+    原来这里硬编码 func.rand()(MySQL 的写法),导致两个后果:
     1. 换数据库要改业务代码
     2. 测试用 SQLite 时直接报 "no such function: rand",
        抽题接口的正常路径根本没法测
 
     「测试写不出来」通常是耦合的信号——这里就是一个具体例子。
-    把方言判断收在本层之后,上层完全不需要知道底下是什么数据库。
+    保留这个薄封装是为了把方言函数的选择留在本层:再换库时只改这一处,
+    上层完全不需要知道底下是什么数据库。
     """
-    dialect = session.get_bind().dialect.name
-    return func.rand() if dialect == "mysql" else func.random()
+    return func.random()
 
 
 def sample_questions(session: Session, job_id: str, limit: int) -> list[Question]:
     """按职业随机抽 limit 道题。
 
     等价 SQL:
-        SELECT * FROM questions WHERE job_id = :job_id ORDER BY RAND() LIMIT :limit
+        SELECT * FROM questions WHERE job_id = :job_id ORDER BY RANDOM() LIMIT :limit
 
-    ORDER BY RAND() 的名声不好,因为它要给全表每行算一个随机值再排序。
+    ORDER BY RANDOM() 的名声不好,因为它要给全表每行算一个随机值再排序。
     但这里 WHERE job_id 先把范围缩到单个职业的题库(百级),
     开销可以忽略。题量到十万级再换策略(比如先随机取主键区间)。
     """
     statement = (
         select(Question)
         .where(Question.job_id == job_id)
-        .order_by(_random_func(session))
+        .order_by(_random_func())
         .limit(limit)
     )
     return list(session.exec(statement).all())

@@ -18,10 +18,12 @@ from collections.abc import AsyncIterator
 from openai import OpenAIError
 from sqlmodel import Session
 
+from app.config import settings
 from app.core.exceptions import UpstreamServiceError
 from app.models.message import ChatMessage
 from app.repositories import message as message_repo
 from app.services.llm import ask_llm, ask_llm_stream
+from app.services.rag import agent as rag_agent
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,10 @@ async def reply(session: Session, *, user_id: int, message: str) -> str:
     _try_save(session, user_id, "user", message)
 
     try:
-        reply_text = await ask_llm(message)
+        if settings.rag_enabled:
+            reply_text = await rag_agent.answer(message)
+        else:
+            reply_text = await ask_llm(message)
     except OpenAIError as exc:
         # 只记日志时才带上原始异常细节;对外抛出的 message 保持通用,
         # 避免把 API Key 片段、上游内部地址之类的信息泄露给调用方。
@@ -80,9 +85,21 @@ async def stream_reply(
 
     parts: list[str] = []
     try:
-        async for delta in ask_llm_stream(message):
-            parts.append(delta)
-            yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+        if settings.rag_enabled:
+            async for event in rag_agent.answer_stream(message):
+                if isinstance(event, rag_agent.StageEvent):
+                    payload = {"stage": event.stage}
+                    if event.detail:
+                        payload["detail"] = event.detail
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                elif isinstance(event, rag_agent.DeltaEvent):
+                    parts.append(event.text)
+                    payload = {"delta": event.text}
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        else:
+            async for delta in ask_llm_stream(message):
+                parts.append(delta)
+                yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
     except OpenAIError as exc:
         logger.error("大模型流式调用失败: %s", exc, exc_info=True)
         # 同样不把上游原始错误透传给前端

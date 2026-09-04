@@ -3,7 +3,6 @@
 #
 # 数据库是 PostgreSQL 18(pgvector 官方镜像,预装向量扩展)。
 # 扩展的 CREATE EXTENSION 由 Alembic 基线迁移执行,不需要手动进库。
-# MySQL 时代的历史迁移记录见 alembic/legacy_mysql/。
 
 services:
   # ============ 反向代理(Nginx)============
@@ -58,9 +57,9 @@ services:
     # 2. 直接在服务器上编辑文件会静默重启生产服务,不留任何痕迹,难排查。
     # 容器异常退出时自动重启(部署到服务器上很有用)
     restart: unless-stopped
-    # depends_on 只是控制"启动顺序",默认不会等 MySQL 真正 ready。
-    # 加 condition: service_healthy 后,backend 会等 mysql healthcheck 通过再启动,
-    # 避免 backend 启动瞬间 MySQL 还没初始化完导致连接被拒。
+    # depends_on 只是控制"启动顺序",默认不会等 postgres 真正 ready。
+    # 加 condition: service_healthy 后,backend 会等 postgres healthcheck 通过再启动,
+    # 避免 backend 启动瞬间 PG 还没初始化完导致连接被拒。
     #
     # redis 用 service_started 而不是 service_healthy:缓存是 fail-open 的,
     # Redis 没就绪时应用会自动降级为直接查库,不该因此阻塞启动。
@@ -119,7 +118,9 @@ services:
     # 用 named volume 持久化数据,docker compose down 不会丢数据。
     # 注意:PG 18 官方镜像要求挂 /var/lib/postgresql(18 起数据存放在
     # 按版本命名的子目录里,方便跨大版本 pg_upgrade),挂老的 .../data 会拒绝启动。
-    # 需要清库重来时:docker compose down -v(带 -v 才会连数据卷一起删)
+    # 危险操作:docker compose down -v 会同时删除 postgres_data,数据不可恢复。
+    # 仅允许在未来已审批的全新部署窗口执行,且须再次确认旧数据无需保留;
+    # 本次代码收敛和日常开发都不得执行。普通停止请使用不带 -v 的 down。
     volumes:
       - postgres_data:/var/lib/postgresql
     # 健康检查:每 5 秒 pg_isready 一次,连续成功才算 healthy。

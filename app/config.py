@@ -142,6 +142,26 @@ class Settings(BaseSettings):
     # token 有效期(分钟),过期后前端需要重新登录。
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 天
 
+    # ===== 社区(帖子/评论/点赞)=====
+    # True 时新帖直接发布,便于本地开发和自用;线上先审后发时置 False,
+    # 未审核的帖子不会出现在公开列表里。
+    community_auto_publish: bool = True
+
+    # 敏感词的环境追加项(内置默认词表在 services/moderation.py)。
+    # 放在这里是为了让运营/部署方能不改代码地补词;命中敏感词的帖子
+    # 会强制进 pending 等人工复核,而不是误杀的代价更大。
+    moderation_extra_banned_words: list[str] = []
+
+    # ===== 语料向量检索(pgvector)=====
+    # 嵌入模型与聊天模型分开配置:内部网关(21 个模型)没有 embedding 类模型,
+    # 嵌入走智谱开放平台的 OpenAI 兼容接口(embedding-3,1024 维约 ¥0.5/百万 token,
+    # 爬几百页语料几分钱)。任何 OpenAI 兼容的 /embeddings 端点都行,换服务商只改这三个值。
+    # 注意维度必须与 app/models/guide_chunk.py 的 EMBEDDING_DIMENSIONS 一致。
+    embedding_api_key: str = ""
+    embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
+    embedding_model: str = "embedding-3"
+    embedding_dimensions: int = 1024
+
     # ===== PostgreSQL 数据库配置 =====
     # 用 Docker 时 host 由 compose 的 environment 覆盖为服务名 "postgres";
     # 本地直跑 uvicorn / alembic / 迁移脚本时用 "127.0.0.1"(见 .env)。

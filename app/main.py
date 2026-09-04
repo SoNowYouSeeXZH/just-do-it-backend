@@ -15,7 +15,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, careers, chat, industries, jobs, messages, tasks, user
+from app.api import (
+    admin,
+    careers,
+    chat,
+    guides,
+    industries,
+    jobs,
+    messages,
+    posts,
+    tasks,
+    user,
+)
 from app.config import settings
 from app.core.handlers import register_exception_handlers
 from app.core.middleware import RequestLoggingMiddleware
@@ -78,9 +89,11 @@ register_exception_handlers(app)
 # 把各子模块的路由挂载到应用上
 app.include_router(careers.router)
 app.include_router(chat.router)
+app.include_router(guides.router)
 app.include_router(industries.router)
 app.include_router(jobs.router)
 app.include_router(messages.router)
+app.include_router(posts.router)
 app.include_router(tasks.router)
 app.include_router(user.router)
 app.include_router(admin.router)

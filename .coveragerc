@@ -7,8 +7,6 @@ omit =
     app/backfill_question_hashes.py
     # 种子数据,内容即断言(跑一遍就知道对不对),测试价值低于维护成本
     app/seed.py
-    # 一次性迁移脚本,2026-09 已实际执行并对账;退场时连同 PyMySQL 一起删
-    app/migrate_mysql_to_pg.py
 # 注:app/import_question_banks.py 曾被 omit,但它有 tests/test_import_question_banks.py
 # 的专属覆盖(解析状态机、LLM 改编、重试兜底),排除它是不成立的,已移出。
 

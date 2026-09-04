@@ -32,7 +32,8 @@ def _chat_headers(client: TestClient, username: str = "chat-user") -> dict[str, 
 
 @pytest.fixture(name="fake_llm")
 def fake_llm_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
-    """把大模型调用替换成固定回复。"""
+    """把大模型调用替换成固定回复,并显式覆盖旧链路。"""
+    monkeypatch.setattr("app.services.chat.settings.rag_enabled", False)
 
     async def fake_ask(message: str) -> str:
         return f"回答: {message}"
@@ -74,6 +75,101 @@ def test_chat_stream_emits_sse_events(client: TestClient, fake_llm: None) -> Non
     assert "data: [DONE]" in response.text
 
 
+def test_chat_rag_returns_agent_reply(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RAG 开关开启时,非流式请求走 Agent。"""
+    monkeypatch.setattr("app.services.chat.settings.rag_enabled", True)
+
+    async def fake_answer(message: str) -> str:
+        return f"攻略回答: {message}\n\n---\n来源：\n[1] wiki"
+
+    monkeypatch.setattr("app.services.chat.rag_agent.answer", fake_answer)
+    response = client.post(
+        "/api/chat", headers=_chat_headers(client), json={"message": "纳塔"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reply"].startswith("攻略回答: 纳塔")
+
+
+def test_chat_rag_stream_adapts_agent_events(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RAG 事件转换为兼容旧客户端的 stage/delta SSE。"""
+    monkeypatch.setattr("app.services.chat.settings.rag_enabled", True)
+
+    async def fake_stream(message: str) -> AsyncIterator[object]:
+        from app.services.rag.agent import DeltaEvent, StageEvent
+
+        yield StageEvent(stage="retrieving", detail="正在搜索：纳塔")
+        yield StageEvent(stage="answering")
+        yield DeltaEvent(text="攻略")
+        yield DeltaEvent(text="内容")
+
+    monkeypatch.setattr("app.services.chat.rag_agent.answer_stream", fake_stream)
+    response = client.post(
+        "/api/chat",
+        headers=_chat_headers(client),
+        json={"message": "纳塔", "stream": True},
+    )
+
+    assert response.status_code == 200
+    assert '"stage": "retrieving"' in response.text
+    assert '"detail": "正在搜索：纳塔"' in response.text
+    assert '"stage": "answering"' in response.text
+    assert '"delta": "攻略"' in response.text
+    assert '"delta": "内容"' in response.text
+    assert "data: [DONE]" in response.text
+
+
+def test_chat_rag_upstream_failure_returns_502(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RAG 非流式故障仍返回脱敏的 502。"""
+    monkeypatch.setattr("app.services.chat.settings.rag_enabled", True)
+
+    async def failing_answer(message: str) -> str:
+        raise OpenAIError("Incorrect API key provided: sk-rag-secret")
+
+    monkeypatch.setattr("app.services.chat.rag_agent.answer", failing_answer)
+    response = client.post(
+        "/api/chat", headers=_chat_headers(client), json={"message": "纳塔"}
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"] == "UPSTREAM_ERROR"
+    assert "sk-rag-secret" not in response.text
+
+
+def test_chat_rag_stream_failure_does_not_persist_partial_reply(
+    client: TestClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RAG 流式中途失败时发送错误和 DONE,但不保存半截 assistant。"""
+    monkeypatch.setattr("app.services.chat.settings.rag_enabled", True)
+
+    async def failing_stream(message: str) -> AsyncIterator[object]:
+        from app.services.rag.agent import DeltaEvent, StageEvent
+
+        yield StageEvent(stage="retrieving")
+        yield DeltaEvent(text="半截回答")
+        raise OpenAIError("upstream key=sk-rag-secret")
+
+    monkeypatch.setattr("app.services.chat.rag_agent.answer_stream", failing_stream)
+    response = client.post(
+        "/api/chat",
+        headers=_chat_headers(client),
+        json={"message": "纳塔", "stream": True},
+    )
+
+    assert response.status_code == 200
+    assert '"delta": "半截回答"' in response.text
+    assert '"error": "智能问答服务暂时不可用,请稍后再试"' in response.text
+    assert "data: [DONE]" in response.text
+    messages = session.exec(select(ChatMessage).order_by(ChatMessage.id)).all()
+    assert [item.role for item in messages] == ["user"]
+
+
 def test_chat_rejects_empty_message(client: TestClient, fake_llm: None) -> None:
     """空消息:被 Field(min_length=1) 拦下,返回 422。"""
     response = client.post(
@@ -96,6 +192,7 @@ def test_chat_upstream_failure_returns_502(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """大模型故障:抛 UpstreamServiceError → 502,且不泄露上游原始错误。"""
+    monkeypatch.setattr("app.services.chat.settings.rag_enabled", False)
 
     async def failing_ask(message: str) -> str:
         raise OpenAIError("Incorrect API key provided: sk-abc123")

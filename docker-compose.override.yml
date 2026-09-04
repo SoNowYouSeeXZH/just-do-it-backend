@@ -20,31 +20,8 @@ services:
     # 覆盖镜像 CMD,加 --reload 开启热重载(只适合本地单人开发)。
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
-  # 本地把 5432 绑到宿主机(仅 127.0.0.1),alembic / 数据迁移脚本直连用。
+  # 本地把 5432 绑到宿主机(仅 127.0.0.1),alembic 直连用。
   # 生产基线不映射端口,这段只在本地生效。
   postgres:
     ports:
       - "127.0.0.1:5432:5432"
-
-# ===== 已退场:迁移窗口期的临时 mysql 服务 =====
-# 本地 MySQL → PG 迁移已于 2026-09 执行完并对账,这个只为读旧源库而存在的服务
-# 连同它的 volumes 声明一起删掉了(它带 restart: unless-stopped,留着会一直白跑)。
-#
-# 旧数据仍在:mysql_data 卷没有被删除,只是不再被任何服务声明引用。
-# 需要复现本地迁移时,把下面这段还原即可(数据原封不动):
-#
-#   mysql:
-#     image: mysql:8.0
-#     container_name: personal-ai-mysql
-#     ports: ["127.0.0.1:3306:3306"]
-#     environment:
-#       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-#       MYSQL_DATABASE: ${MYSQL_DATABASE}
-#     volumes: [mysql_data:/var/lib/mysql]
-#   # 文件底部再补:
-#   volumes:
-#     mysql_data:
-#
-# 卷本身要等**线上也迁完**再考虑删除(docker volume rm 不可逆)。
-# 注意 app/migrate_mysql_to_pg.py、PyMySQL、.env 里的 MYSQL_* 都还留着,
-# 因为云节点还没迁,那条路径依然要用——只有这个纯本地的临时容器可以先撤。

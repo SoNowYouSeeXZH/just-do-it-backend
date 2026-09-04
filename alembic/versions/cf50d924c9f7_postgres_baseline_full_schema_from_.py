@@ -2,7 +2,7 @@
 
 PG 谱系的第一个 revision:在全新 PostgreSQL 上一次性建出全部业务表。
 这同时补上了 MySQL 时代「0001 基线为空、表结构全靠 create_all」的历史 TODO
-(旧谱系归档在 alembic/legacy_mysql/)。
+(旧谱系已随线上 MySQL 一起退场,需要回查用 git 历史)。
 
 pgvector 扩展也在此启用(IF NOT EXISTS 保证幂等):
 - 镜像是 pgvector/pgvector:pg18,扩展文件已预装,这里只做注册

@@ -17,7 +17,7 @@ Dockerfile  → 如何构建镜像
 数据卷      → 独立于容器生命周期的持久化数据
 ```
 
-数据库数据在 named volume `justdoit-backend_mysql_data` 中。重建 backend 容器不会删除 MySQL 数据；`docker compose down -v` 才会删除数据卷，是破坏性操作。
+数据库数据在 named volume `justdoit-backend_postgres_data` 中。重建 backend 容器不会删除数据；`docker compose down -v` 才会删除数据卷，是破坏性操作。
 
 ### `create_all()` 和 Alembic
 
@@ -88,7 +88,7 @@ DDL 可能自动提交，部分数据库的结构操作不能像普通 DML 一�
 - **生产直接 `alembic upgrade head` 而没有 baseline。** 没有历史版本时可能重复创建已有表。
 - **把 `stamp` 当成迁移。** `stamp` 只写版本号，不执行任何结构变化。
 - **迁移前不备份。** DDL 和数据回填可能无法完整回滚。
-- **用 `docker compose down -v` 清理部署。** 会删除 MySQL 数据卷，不能当普通重启命令。
+- **用 `docker compose down -v` 清理部署。** 会删除数据库数据卷，不能当普通重启命令。
 - **覆盖服务器 `.env`。** 上传代码时必须排除生产配置和密钥。
 - **只验证容器 Up。** 容器在运行不等于 API 可用，还要检查健康接口和关键受保护路由。
 

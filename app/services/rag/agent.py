@@ -44,14 +44,16 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "你是一个游戏攻略助手。\n"
-    "- 回答具体游戏内容(角色、任务、道具、地图、数值、版本改动)时,必须先用 "
-    "search_guides 检索,再按需用 fetch_page 读正文,不要凭记忆回答——"
-    "游戏内容版本迭代快,记忆里的信息很可能已经过期。\n"
-    "- **检索关键词只写游戏内的专有名词,不要带游戏名。** 检索的是各游戏各自的 "
+    "- 回答具体游戏内容(角色、任务、道具、地图、数值、版本改动)时,必须先检索,"
+    "不要凭记忆回答——游戏内容版本迭代快,记忆里的信息很可能已经过期。\n"
+    "- **检索优先用 search_local_corpus**(本地语料库,返回正文原文、不受站点限流影响)。"
+    "它返回「没有相关内容」时,再用 search_guides 查在线 wiki,并按需用 fetch_page 读正文。\n"
+    "- **search_guides 的关键词只写游戏内的专有名词,不要带游戏名。** 检索的是各游戏各自的 "
     "wiki 站,站点本身已经限定了游戏;把游戏名写进关键词会因为搜索引擎按词取交集"
     "而搜不到正确词条。比如问「原神的纳塔是什么地方」,应该搜「纳塔」而不是「原神 纳塔」。\n"
-    "- 关键词也要短。多个词会被当作 AND 条件,越长越容易 0 命中;"
-    "一次搜不到就换一个更短或更常见的词条名重试。\n"
+    "- search_guides 的关键词也要短。多个词会被当作 AND 条件,越长越容易 0 命中;"
+    "一次搜不到就换一个更短或更常见的词条名重试。"
+    "(search_local_corpus 是语义检索,可以直接写完整问句。)\n"
     "- 检索不到时,明确说明没查到,再给通用建议。**不要编造具体数值、"
     "道具名、任务步骤或页面地址。**\n"
     "- 不是游戏相关的问题,直接回答即可,不用检索。"
@@ -141,6 +143,8 @@ def _stage_detail(name: str, arguments: dict[str, Any]) -> str:
     """给前端看的一句人话。不要把原始参数 JSON 直接吐出去。"""
     if name == "search_guides":
         return f"正在搜索：{arguments.get('query', '')}".strip()
+    if name == "search_local_corpus":
+        return f"正在检索攻略库：{arguments.get('query', '')}".strip()
     if name == "fetch_page":
         return "正在阅读攻略页面"
     return f"正在调用 {name}"
@@ -198,8 +202,8 @@ async def _retrieve_events(
 
             for title, url in result.candidates:
                 collector.add_candidate(title, url)
-            if result.fetched_url:
-                collector.mark_fetched(result.fetched_url)
+            for url in result.all_fetched_urls:
+                collector.mark_fetched(url)
 
             messages.append(
                 {

@@ -7,7 +7,7 @@
 
 设计说明(2026-09 题库域收敛后):
 - 职业只保留 frontend / backend 两个——只有它们有开源题库与官方学习文档,
-  其余 9 个职业已随 MySQL→PG 迁移删除(收敛规则见
+  其余 9 个职业已在 2026-09 的题库域收敛中删除(收敛规则见
   .comate/specs/game-guide-rag-agent/doc.md 的 Track C)。
 - questions 表不再由 seed 灌入:历史上的种子题混着 LLM 凭空生成的题,
   无字段级区分,已整表换血。题库统一由开源导入管道供给:

@@ -22,12 +22,14 @@ function calling 的坑几乎都出在两边不一致上:schema 里写了参数 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from app.config import settings
+from app.core.exceptions import AppError
 from app.services.rag import page_fetcher, search_provider
 
 logger = logging.getLogger(__name__)
@@ -53,6 +55,17 @@ class ToolResult:
     candidates: list[tuple[str, str]] = field(default_factory=list)
     # 本次真正抓取了正文的 URL(fetch_page 才有)
     fetched_url: str | None = None
+    # 一次调用带回多段正文时用(语料检索一次返回 top_k 段)。
+    # 和 fetched_url 并存而不是替换它:fetch_page 语义上就是单页,
+    # 强行改成列表会让调用方每次都要处理"只有一个元素的列表"。
+    fetched_urls: list[str] = field(default_factory=list)
+
+    @property
+    def all_fetched_urls(self) -> list[str]:
+        urls = list(self.fetched_urls)
+        if self.fetched_url:
+            urls.append(self.fetched_url)
+        return urls
 
 
 async def _run_search(arguments: dict[str, Any]) -> ToolResult:
@@ -87,6 +100,65 @@ async def _run_fetch(arguments: dict[str, Any]) -> ToolResult:
 
     text = await page_fetcher.fetch_page(url)
     return ToolResult(text=f"页面 {url} 的正文:\n{text}", fetched_url=url)
+
+
+async def _run_corpus_search(arguments: dict[str, Any]) -> ToolResult:
+    """本地语料向量检索。
+
+    为什么放在 tools 而不是替换掉 search_guides:两者互补而不是替代。
+    语料库是预爬的快照,覆盖面有限(没爬到的页答不了);实时 wiki 检索覆盖全、
+    但受 WAF 限流。让模型自己决定先查哪个——语料命中就省掉外网请求,
+    没命中再退回实时检索。这也是"语料还没爬全"这个阶段唯一安全的接法。
+
+    嵌入和数据库都是同步/IO 混合:embed 是 await,DB 查询是同步 Session,
+    后者放到线程里跑,避免阻塞事件循环。
+    """
+    query = (arguments.get("query") or "").strip()
+    if not query:
+        return ToolResult(text="工具调用缺少 query 参数,请给出要检索的内容。")
+    game_slug = (arguments.get("game_slug") or "").strip() or None
+
+    # 延迟导入:tools 模块被 agent 在 import 期加载,而这些模块会连数据库/
+    # 建 LLM 客户端。放在函数里,没配嵌入 Key 的部署也能正常用其它工具。
+    from sqlmodel import Session
+
+    from app.db import engine
+    from app.repositories import guide_chunk as chunk_repo
+    from app.services import embedding
+
+    vectors = await embedding.embed_texts([query])
+
+    def _search() -> list[tuple[str, str, str]]:
+        with Session(engine) as session:
+            chunks = chunk_repo.search_similar(
+                session,
+                query_embedding=vectors[0],
+                game_slug=game_slug,
+                top_k=settings.rag_search_max_results,
+            )
+            # 在 session 内取完值再返回:Session 关闭后访问 ORM 属性会
+            # 触发 DetachedInstanceError。
+            return [(c.title, c.source_url, c.chunk_text) for c in chunks]
+
+    rows = await asyncio.to_thread(_search)
+    if not rows:
+        return ToolResult(
+            text=(
+                f"本地语料库里没有与「{query}」相关的内容。"
+                "可以改用 search_guides 检索在线 wiki。"
+            )
+        )
+
+    lines = [f"本地语料检索「{query}」得到 {len(rows)} 段:"]
+    for index, (title, url, chunk_text) in enumerate(rows, start=1):
+        lines.append(f"{index}. {title}\n   URL: {url}\n   内容: {chunk_text}")
+    return ToolResult(
+        text="\n".join(lines),
+        # 语料块的正文已经进了上下文,等价于"抓过"——按 fetched 计,
+        # 让它在来源列表里排在只有摘要的候选前面。
+        candidates=[(title, url) for title, url, _ in rows],
+        fetched_urls=[url for _, url, _ in rows],
+    )
 
 
 # schema 与执行器成对定义。加新工具时两边必须同时写,漏一边单测会红。
@@ -142,6 +214,41 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
         "run": _run_fetch,
     },
+    "search_local_corpus": {
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "search_local_corpus",
+                "description": (
+                    "在本地已收录的攻略语料库里做语义检索,直接返回相关段落原文。"
+                    "**优先用它**:速度快、不受站点限流影响,返回的就是正文而不是摘要。"
+                    "它是预先收录的快照,可能没有覆盖到你要的内容;"
+                    "返回「没有相关内容」时再用 search_guides 查在线 wiki。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": (
+                                "要检索的问题或关键词。这是语义检索,"
+                                "可以写完整的问句,不必像关键词搜索那样只写词条名。"
+                            ),
+                        },
+                        "game_slug": {
+                            "type": "string",
+                            "description": (
+                                "限定游戏:ys(原神)、sr(星穹铁道)、zzz(绝区零)。"
+                                "不确定是哪个游戏时留空,检索全部语料。"
+                            ),
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        "run": _run_corpus_search,
+    },
 }
 
 
@@ -194,6 +301,14 @@ async def execute(name: str, raw_arguments: str | None) -> ToolResult:
         logger.info("工具 %s 执行失败: %s", name, exc)
         return ToolResult(
             text=f"工具 {name} 执行失败:{exc}。可以换个关键词或换一个来源再试。"
+        )
+    except AppError as exc:
+        # 嵌入服务没配 Key(503)或调用失败(502)不该让整个对话挂掉——
+        # 语料检索不可用时,模型完全可以退回 search_guides 查在线 wiki。
+        # 注意用 exc.message:AppError 的 message 是给用户看的脱敏文案。
+        logger.info("工具 %s 依赖不可用: %s", name, exc.message)
+        return ToolResult(
+            text=f"工具 {name} 当前不可用:{exc.message}。请改用其他检索工具。"
         )
     except Exception as exc:  # noqa: BLE001 - 兜底,不让未预期异常打断整个对话
         # 这里只给类型名。未预期异常的消息里可能有内部路径、SQL 片段,

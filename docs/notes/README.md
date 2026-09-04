@@ -31,8 +31,10 @@
 - [15 索引迁移与企业级变更流程](15-index-migration-and-enterprise-gap.md) — 复合索引设计、迁移完整链路、企业级变更流程、大表加索引的替代方案（示例基于 MySQL 时代，PG 对照见文内）
 - [16 MySQL → PostgreSQL 全量迁移实战](16-mysql-to-postgres-migration.md) — 为什么整库切换、Alembic 基线重建、序列重置、detached 对象踩坑、方言判重适配
 - [17 题库重建管道：开源直导 + LLM 有锚点改编](17-question-bank-rebuild-pipeline.md) — LLM 当适配器而非作者、Markdown 状态机解析、批量改编与溯源
+- [18 垂直领域 RAG Agent：手写 ReAct 循环与可溯源引用](18-rag-agent-and-retrieval.md) — 两段式检索/综合、有界循环、服务端确定性引用组装、SearchProvider 抽象、SSRF 四道防线
+- [19 聊天服务接线与灰度开关](19-chat-service-wiring-and-rag-rollout.md) — RAG 开关分流、Agent 事件到 SSE 的适配、旧链路回退与落库语义
+- [20 UGC 内容审核](20-ugc-moderation.md) — 先审后发 vs 先发后审、敏感词归一化与绕过、审核状态流、可见性作为安全约束、API Key 常量时间比较
 
 ## 待补（随迭代推进）
 
-- 18 检索基建与 RAG 管道（Track B）
-- 19 ReAct Agent 循环与工具调用（Track B）
+- 预爬语料 + pgvector 向量检索（替掉实时抓取 wiki）

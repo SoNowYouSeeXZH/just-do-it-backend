@@ -171,8 +171,8 @@ def test_sample_questions_returns_full_content(
     """抽题接口返回答案与解析(前端本地判分需要),但不含内部字段。
 
     这条用例能跑起来本身就是重构的成果:原来 repository 里硬编码
-    func.rand(),SQLite 上报 "no such function: rand",正常路径无法测试。
-    现在按方言自动选 rand()/random()。
+    func.rand()(MySQL 写法),SQLite 上报 "no such function: rand",
+    正常路径无法测试。现在方言函数收在 repository 层,用 random()。
     """
     response = client.get("/api/jobs/frontend/questions?limit=5")
 

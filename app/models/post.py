@@ -2,8 +2,11 @@
 
 一期只做「帖 + 评论 + 点赞 + 审核」,不做关注/信息流/通知。
 
-分区维度是「游戏一级、城市二级」:game_slug 必填(社区按游戏分区),
-city 可空(不是所有帖子都跟线下城市相关)。
+分区维度(2026-09 转型后):以地理位置为主轴的「附近广场」。
+game_slug 仍必填(帖子归属某款游戏,现在是自由填写的话题标签);
+lat/lng 是发帖时的坐标(可空,用户未授权定位时没有),用于「附近」距离过滤;
+district 是模糊化后的行政区名(如「朝阳区」),展示只到这一级,精确坐标不外泄。
+city 保留作为兼容字段。
 """
 
 from datetime import datetime
@@ -22,10 +25,16 @@ class Post(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     # 作者。外键让数据库拒绝不存在的 user_id;index 是因为「我的帖子」按它过滤。
     user_id: int = Field(foreign_key="users.id", index=True)
-    # 游戏分区 slug,与 settings.wiki_sites 的取值一致(ys/sr/zzz)。
+    # 游戏分区 slug。转型后是自由填写(存在则收录、不存在则新增),不再限于 ys/sr/zzz。
     game_slug: str = Field(max_length=32, index=True)
     # 城市是二级维度,允许为空。
     city: str | None = Field(default=None, max_length=32, index=True)
+    # 发帖坐标:用于「附近」距离过滤。用户未授权定位时为空——这类帖子不参与
+    # 距离筛选,只在「不限地区」下可见。加 index 是因为附近查询用它做包围盒过滤。
+    lat: float | None = Field(default=None, index=True)
+    lng: float | None = Field(default=None, index=True)
+    # 模糊化后的行政区名(如「朝阳区」)。展示只到这一级,精确坐标从不下发给前端。
+    district: str | None = Field(default=None, max_length=32)
     title: str = Field(max_length=120)
     content: str
     # 审核状态:列表默认只查 published,审核未通过的帖子只有作者和管理端能看到。

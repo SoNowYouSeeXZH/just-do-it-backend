@@ -11,12 +11,21 @@ class PostCreate(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     content: str = Field(min_length=1, max_length=5000)
     city: str | None = Field(default=None, max_length=32)
+    # 发帖位置(可选):前端拿到定位就带上,坐标入库用于「附近」距离过滤,
+    # district 是模糊化后的行政区名(展示用)。三者要么都有要么都无。
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lng: float | None = Field(default=None, ge=-180, le=180)
+    district: str | None = Field(default=None, max_length=32)
 
 
 class PostPublic(BaseModel):
     id: int
     game_slug: str
     city: str | None
+    # 行政区名(模糊化位置)。精确坐标 lat/lng 不在公开 DTO 里——只到行政区级。
+    district: str | None
+    # 距离(公里)。仅「附近」查询(带 lat/lng)时由服务层计算回填,其他查询为 None。
+    distance_km: float | None = None
     title: str
     content: str
     status: str

@@ -129,6 +129,7 @@ _SCRIPT_STYLE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _TAG = re.compile(r"<[^>]+>")
+_STRAY_TAG_OPEN = re.compile(r"<[a-zA-Z][^>]*$")
 _BLANK_LINES = re.compile(r"\n{3,}")
 _SPACES = re.compile(r"[ \t\u00a0]+")
 
@@ -195,6 +196,11 @@ def extract_text(html: str) -> str:
     text = _BLOCK_TAGS.sub("\n", text)
     text = _TAG.sub(" ", text)
     text = html_module.unescape(text)
+    # fetch_page 按字节截断响应体,截断点可能落在一个标签中间(结尾残留
+    # "<div" 这种没有闭合的碎片),完整标签的正则剥不掉它。
+    # 截断只发生在文末,所以删一次尾部碎片就够;unescape 后再删一遍是防
+    # 源页面里嵌着 &lt;div 这类实体写法,反转义后变成同样的碎片。
+    text = _STRAY_TAG_OPEN.sub(" ", text)
     text = _SPACES.sub(" ", text)
     text = "\n".join(line.strip() for line in text.split("\n"))
     text = _BLANK_LINES.sub("\n\n", text)

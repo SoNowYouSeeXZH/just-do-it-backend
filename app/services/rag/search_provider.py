@@ -172,20 +172,94 @@ def reset_provider_for_tests() -> None:
     _provider = None
 
 
-async def search_guides(query: str, max_results: int | None = None) -> list[SearchHit]:
-    """带缓存的搜索入口。工具层只调这个,不直接碰 Provider。
+def _filter_noise(hits: list[SearchHit], query: str) -> list[SearchHit]:
+    """过滤子站全文搜索的噪音结果。
 
-    缓存意义有两层:同一攻略问题短时间内重复问只打一次外部搜索(快),
-    以及给抓取型来源做频控护栏(稳)。缓存本身 fail-open——
-    Redis 挂了只是每次都真查,不会让功能不可用。
+    纯数字/超短的查询(如「2077」)会匹配到数值表格页——原神 wiki 的怪物
+    属性表里到处是四位数字,标题却是「水萤」「可莉」,和查询毫无关系。
+    对这类查询要求命中词出现在**标题**里(数值表标题不含 2077,被滤掉);
+    正常长度的查询(「纳塔 地灵龛之钥」)不做过滤,避免误杀标题不含原词的
+    合法结果(比如标题是「XX入口」正文讲「怎么进」的页面)。
+    """
+    normalized = query.strip().lower()
+    is_noisy = normalized.isdigit() or len(normalized) <= 2
+    if not is_noisy:
+        return hits
+    return [hit for hit in hits if normalized in hit.title.lower()]
+
+
+async def _search_bing_externals(query: str, limit: int) -> list[SearchHit]:
+    """Bing 国内版外链搜索:论坛/攻略站(游民/3DM/知乎/贴吧等)。
+
+    2026-09-20 检索重设计:产品形态收敛为「搜出外链,用户跳走」,所以
+    通用网页搜索从「可选兜底」升级为「主来源之一」。query 拼上「攻略」
+    提高命中率;域名白名单在 BingCnProvider 内部过滤。
+    任何失败静默返回空——抓取型来源挂了不能拖垮整个搜索。
+    """
+    # 局部 import:bing_cn 反向依赖本模块的 SearchHit,顶层导入会循环。
+    from app.services.rag.bing_cn import BingCnProvider
+
+    try:
+        hits = await BingCnProvider().search(f"{query} 攻略", limit)
+        if hits:
+            logger.info("bing 外链命中 query=%s hits=%d", query, len(hits))
+        return hits
+    except SearchError as exc:
+        logger.warning("bing 外链搜索失败 query=%s reason=%s", query, exc)
+        return []
+
+
+async def search_guides(query: str, max_results: int | None = None) -> list[SearchHit]:
+    """攻略搜索的统一入口(公开接口与 Agent 工具共用)。
+
+    三路来源合并(2026-09-20 重设计,取代原「子站→中心站→DDG」瀑布):
+    1. **biligame 子站白名单**(精准):预置游戏的攻略页,站点内搜索。
+    2. **中心站深挖**(未预置游戏):intitle 找游戏门户 → 解析「进入WIKI」
+       得到真实子站 → 用原关键词搜子站,拿到真攻略页;失败降级为门户入口。
+    3. **Bing 外链**(论坛/攻略站):游民/3DM/知乎/贴吧等,域名白名单过滤,
+       满足「帮用户搜出其他攻略网站的链接,点击跳走」的产品形态。
+
+    合并顺序:外链在前(用户要的就是跳走的论坛攻略),wiki 页在后,按 URL 去重。
+    任一路失败都静默降级为空,不影响其他路;全部为空就诚实返回空。
+    缓存 fail-open:Redis 挂了只是每次真查,功能不不可用。
     """
     limit = max_results or settings.rag_search_max_results
     key = cache_keys.rag_search(f"{query_fingerprint(query)}:{limit}")
 
     async def load() -> list[dict[str, str]]:
-        hits = await get_provider().search(query, limit)
-        logger.info("搜索完成 query=%s hits=%d", query, len(hits))
-        return [hit.to_dict() for hit in hits]
+        # 1) biligame 子站(预置游戏)
+        try:
+            wiki_hits = _filter_noise(await get_provider().search(query, limit), query)
+        except SearchError as exc:
+            logger.info("子站检索失败(继续其他来源) query=%s err=%s", query, exc)
+            wiki_hits = []
+
+        # 2) 中心站深挖(未预置游戏;预置游戏命中时它通常为空,无害)
+        center = getattr(get_provider(), "search_center", None)
+        center_hits: list[SearchHit] = []
+        if center is not None:
+            try:
+                center_hits = await center(query, limit)
+            except SearchError as exc:
+                logger.info("中心站检索失败 query=%s err=%s", query, exc)
+
+        # 3) Bing 外链(论坛/攻略站),拼「攻略」提高相关性
+        externals = await _search_bing_externals(query, limit)
+
+        # 合并去重:外链在前(用户要的就是跳转),wiki 攻略页在后
+        seen: set[str] = set()
+        merged: list[SearchHit] = []
+        for hit in [*externals, *wiki_hits, *center_hits]:
+            if hit.url in seen:
+                continue
+            seen.add(hit.url)
+            merged.append(hit)
+            if len(merged) >= limit:
+                break
+
+        logger.info("搜索完成 query=%s hits=%d (外链%d wiki%d 中心站%d)",
+                    query, len(merged), len(externals), len(wiki_hits), len(center_hits))
+        return [hit.to_dict() for hit in merged]
 
     # 缓存里存的是 dict 列表(可 JSON 序列化),取回来再还原成 SearchHit。
     # 直接缓存对象需要 pickle,而 pickle 反序列化不可信数据是安全隐患。

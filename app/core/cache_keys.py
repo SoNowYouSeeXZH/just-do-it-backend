@@ -67,3 +67,13 @@ def rag_search(query_fingerprint: str) -> str:
     同样一句话在不同上下文里该给出不同答案,缓存它会答错。
     """
     return f"jd:rag:search:{query_fingerprint}"
+
+
+def guide_content(url_fingerprint: str) -> str:
+    """单篇攻略正文的缓存 key。
+
+    传进来的是 sha1(url)[:16] 指纹 + 截断长度(如 `a1b2c3...:8000`),
+    同样的理由:URL 太长且可能带敏感 query,不进 key 名。
+    长度并入 key 是因为不同截断长度返回的正文不同,不能共用一份缓存。
+    """
+    return f"jd:guides:content:{url_fingerprint}"

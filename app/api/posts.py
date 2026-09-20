@@ -27,12 +27,25 @@ def list_posts(
     session: SessionDep,
     game_slug: Annotated[str | None, Query(max_length=32)] = None,
     city: Annotated[str | None, Query(max_length=32)] = None,
+    lat: Annotated[float | None, Query(ge=-90, le=90)] = None,
+    lng: Annotated[float | None, Query(ge=-180, le=180)] = None,
+    radius_km: Annotated[float | None, Query(gt=0, le=500)] = None,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[PostPublic]:
-    """列出已发布的帖子,游客可访问。offset/limit 分页。"""
+    """列出已发布的帖子,游客可访问。offset/limit 分页。
+
+    带 lat/lng/radius_km 时按距离过滤(「附近」),否则按时间倒序全量。
+    """
     return post_service.list_posts(
-        session, game_slug=game_slug, city=city, limit=limit, offset=offset
+        session,
+        game_slug=game_slug,
+        city=city,
+        lat=lat,
+        lng=lng,
+        radius_km=radius_km,
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -50,6 +63,9 @@ def create_post(
         title=payload.title,
         content=payload.content,
         city=payload.city,
+        lat=payload.lat,
+        lng=payload.lng,
+        district=payload.district,
     )
 
 

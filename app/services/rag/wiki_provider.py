@@ -17,8 +17,15 @@ DDG 实现保留在 `search_provider.py` 里,通过 `settings.search_provider` �
 
 ## 已知限制(不藏着)
 
-- 站点是白名单式的:一个 wiki 对应一个游戏,问到没配的游戏就检索不到。
-  这是刻意的取舍——比"什么都搜但一半时间失败"更可预期。
+- 游戏子站是白名单式的:一个 wiki 对应一个游戏。没配的游戏走不到子站,
+  兜底由 search_provider 的 `_fallback_search` 处理:先查中心站(见下),
+  再退到 DDG(国内网络不可达,海外部署时自动生效)。
+- 中心站(`wiki.biligame.com/wiki`,slug 固定为 `wiki`)收录各游戏的
+  **门户页**(如「塞尔达传说：织梦岛WIKI」)。门户页正文里的「进入WIKI」
+  链接是普通 <a>,可以解析出真实子站 slug(如 dream),所以未预置的游戏
+  也能搜到**真攻略页**;解析失败时降级为门户入口页本身。
+- 中心站直接全文搜索会命中大量目录垃圾页(首页/New 等页面正文里列着
+  全站游戏名),必须用 `intitle:` 限定标题匹配,并对纯数字查询诚实返回空。
 - biligame 有 WAF,请求密了会返回 **567**。所以有退避重试,且检索结果
   必须走 Redis 缓存(见 search_provider.search_guides)。
 """
@@ -44,6 +51,14 @@ _TAG = re.compile(r"<[^>]+>")
 
 # WAF / 限流的状态码。567 是 biligame 自定义的拦截码,429 是标准限流。
 _RETRYABLE_STATUS = {429, 567, 503}
+
+# biligame 跨游戏中心站的 slug(固定):收录全站游戏的门户页,
+# 是「没预置的游戏」检索兜底的入口。见 search_center。
+_CENTER_SITE_SLUG = "wiki"
+
+# 中心站自身的保留路径:解析门户页「进入WIKI」链接时要排除,
+# 否则可能把导航链接误判成游戏子站。
+_CENTER_RESERVED_SLUGS = {"wiki", "tools", "api"}
 
 
 def _strip_tags(text: str) -> str:
@@ -151,12 +166,95 @@ class MediaWikiProvider:
         logger.info("wiki 检索完成 query=%s hits=%d", query, len(hits))
         return hits[:max_results]
 
+    async def search_center(self, query: str, max_results: int) -> list[SearchHit]:
+        """跨游戏检索:没预置的游戏走这里。
+
+        三层策略(2026-09-20 重做,旧版直接搜中心站会命中大量目录垃圾页——
+        中心站的「首页/New」等页面的正文里列着全站几百个游戏名,模糊搜索
+        谁都匹配得上,搜「2077」出来的是「首页(全站目录)」这种牛头不对马嘴):
+
+        1. `intitle:` 限定标题匹配——游戏门户页的标题就是「XXXWIKI」,
+           标题匹配基本只命中正确的游戏入口(实测 intitle:赛博朋克 → 赛博朋克2077WIKI)。
+        2. 命中门户页后,从页面里的「进入WIKI」链接解析出真实子站 slug
+           (如织梦岛门户 → wiki.biligame.com/dream),再用原始关键词搜该子站,
+           拿到的是真正的攻略页而不是门户目录。
+        3. 任何一步失败都降级:第 2 步失败退回门户页本身,第 1 步就失败返回空。
+
+        纯数字/过短的查询(如「2077」)在标题索引里可能搜不到(分词器忽略纯数字),
+        此时诚实返回空——用户换个更完整的游戏名就能命中,好过返回垃圾结果。
+        """
+        async with httpx.AsyncClient(
+            timeout=settings.wiki_request_timeout_seconds,
+            headers={"User-Agent": "JustDoItBot/1.0 (+game guide assistant)"},
+            follow_redirects=True,
+        ) as client:
+            try:
+                portals = await self._search_site(
+                    client, _CENTER_SITE_SLUG, f"intitle:{query}", max_results,
+                    site_label="B站游戏Wiki",
+                )
+            except SearchError as exc:
+                logger.info("中心站 intitle 检索失败 query=%s err=%s", query, exc)
+                return []
+
+            if not portals:
+                return []
+
+            # 门户页只是入口,尝试解析真实子站并搜出真攻略
+            try:
+                slug = await self._resolve_wiki_slug(client, portals[0].url)
+            except SearchError as exc:
+                logger.info("门户页子站解析失败 url=%s err=%s", portals[0].url, exc)
+                slug = None
+
+            if slug:
+                try:
+                    real = await self._search_site(
+                        client, slug, query, max_results,
+                        site_label=f"{slug} wiki",
+                    )
+                except SearchError as exc:
+                    logger.info("子站攻略检索失败 slug=%s err=%s", slug, exc)
+                    real = []
+                if real:
+                    logger.info(
+                        "中心站命中并解析子站 query=%s slug=%s hits=%d", query, slug, len(real)
+                    )
+                    return real[:max_results]
+
+        logger.info("中心站检索完成(仅门户入口) query=%s hits=%d", query, len(portals))
+        return portals[:max_results]
+
+    async def _resolve_wiki_slug(self, client: httpx.AsyncClient, portal_url: str) -> str | None:
+        """从中心站门户页的「进入WIKI」链接解析真实游戏子站 slug。
+
+        门户页正文里的游戏入口是普通 <a>(非 JS 渲染,实测可解析)。
+        只认「进入WIKI」文字的锚点,避免把导航/静态资源链接误当子站。
+        解析不出返回 None,调用方降级为门户页本身。
+        """
+        await _throttle()
+        response = await client.get(portal_url)
+        if response.status_code != 200:
+            return None
+        match = re.search(
+            r'href="(https?://[^"]*?biligame\.com/([A-Za-z0-9_]{2,32}))/?["][^>]*>[^<]*进入[^<]*WIKI',
+            response.text,
+        )
+        if match is None:
+            return None
+        slug = match.group(2).lower()
+        # 防御:排除中心站自身的保留路径,避免把导航链接当子站
+        if slug in _CENTER_RESERVED_SLUGS:
+            return None
+        return slug
+
     async def _search_site(
         self,
         client: httpx.AsyncClient,
         slug: str,
         query: str,
         limit: int,
+        site_label: str | None = None,
     ) -> list[SearchHit]:
         params = {
             "action": "query",
@@ -177,7 +275,9 @@ class MediaWikiProvider:
                 continue
             out.append(
                 SearchHit(
-                    title=f"{title}（{slug} wiki）",
+                    # 中心站的页面标题自带「XXXWIKI」后缀,再拼 slug 会变成
+                    # 「（wiki wiki）」这种怪话,所以允许调用方自定义来源标签。
+                    title=f"{title}（{site_label or f'{slug} wiki'}）",
                     # 页面 URL 要能直接点开,所以用 /wiki 风格的固定链接而不是
                     # api.php 查询串。quote 是必须的:标题里有中文和空格。
                     url=f"{self._base}/{slug}/{quote(title)}",

@@ -26,8 +26,13 @@ def list_published(
     city: str | None,
     limit: int,
     offset: int = 0,
+    bbox: tuple[float, float, float, float] | None = None,
 ) -> list[tuple[Post, str]]:
-    """按发布时间倒序分页取帖子,返回 (帖子, 作者名) 列表。"""
+    """按发布时间倒序分页取帖子,返回 (帖子, 作者名) 列表。
+
+    bbox=(lat_min, lat_max, lng_min, lng_max) 时按经纬度包围盒粗筛(用于「附近」),
+    精确距离过滤和排序由服务层用 Haversine 完成——这里只负责能命中索引的粗筛。
+    """
     statement = (
         select(Post, Users.username)
         .join(Users, Users.id == Post.user_id)
@@ -37,6 +42,15 @@ def list_published(
         statement = statement.where(Post.game_slug == game_slug)
     if city:
         statement = statement.where(Post.city == city)
+    if bbox is not None:
+        lat_min, lat_max, lng_min, lng_max = bbox
+        # 只有带坐标的帖子参与附近查询;NULL 坐标的帖子进不了包围盒。
+        statement = statement.where(
+            Post.lat >= lat_min,
+            Post.lat <= lat_max,
+            Post.lng >= lng_min,
+            Post.lng <= lng_max,
+        )
     # 第二排序键是主键:只按 created_at 排序时,同一秒内写入的帖子顺序不稳定,
     # 翻页会出现同一条重复出现或被跳过。
     statement = (
@@ -112,6 +126,9 @@ def insert(
     content: str,
     city: str | None,
     status: str,
+    lat: float | None = None,
+    lng: float | None = None,
+    district: str | None = None,
 ) -> Post:
     post = Post(
         user_id=user_id,
@@ -119,6 +136,9 @@ def insert(
         title=title,
         content=content,
         city=city,
+        lat=lat,
+        lng=lng,
+        district=district,
         status=status,
     )
     session.add(post)
